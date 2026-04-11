@@ -1,0 +1,37 @@
+# Fine-tuning ResNet-50 (teacher) su CIFAR-100 con LR diversi: conv1+fc vs backbone ImageNet
+experiment:
+  name: teacher_finetune_cifar100
+  seed: 42
+  device: cuda
+
+data:
+  root: ./dataset
+  batch_size: 128
+  num_workers: 4
+  download: false
+  pin_memory: true
+  drop_last: false
+
+training:
+  epochs: 1 # TODO: aumentare fino a convergenza (teacher deve essere forte per la KD)
+  # LR più alto per layer reinizializzati (conv1 3x3, fc 100 classi)
+  learning_rate_new: 0.1
+  # Backbone: lr = learning_rate_new * backbone_lr_mult (es. 0.01 → 100× più piccolo)
+  backbone_lr_mult: 0.01
+  momentum: 0.9
+  weight_decay: 5.0e-4
+
+model:
+  teacher_name: resnet50
+  student_name: resnet18
+  num_classes: 100
+  pretrained_teacher: true
+  teacher_weights_path: ./weights/resnet50_imagenet1k_v1.pth
+
+checkpoint:
+  dir: ./checkpoints
+  # Output: checkpoints/teacher_finetune_cifar100_teacher.pt → usa come teacher_weights_path dopo il fine-tuning
+
+metrics:
+  latency_num_batches: 50
+  latency_warmup_batches: 5

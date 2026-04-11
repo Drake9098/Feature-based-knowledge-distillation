@@ -1,0 +1,8 @@
+# PyTorch: su Windows, `pip install torch` da PyPI spesso installa solo CPU → torch.cuda.is_available() == False.
+# Per la GPU, dopo il venv esegui (scegli cu* come su https://pytorch.org/get-started/locally/ , es. cu128):
+#   pip uninstall -y torch torchvision
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
+torch>=2.0.0
+torchvision>=0.15.0
+PyYAML>=6.0
+tqdm>=4.65.0
