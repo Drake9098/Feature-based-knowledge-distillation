@@ -1,15 +1,207 @@
 #!/bin/bash
 # ============================================================================
-# Alias utili per il cluster DMI
+# Alias utili per questo progetto (CIFAR-100 / teacher+student / KD)
 #
 # Uso:
 #   source cluster/aliases.sh
 #
 # Per caricarli automaticamente, aggiungi al tuo ~/.bashrc:
-#   source ~/GRPO-strict-generation/cluster/aliases.sh
+#   source /path/al/repo/cluster/aliases.sh
 # ============================================================================
 
-PROJ_DIR="$HOME/GRPO-strict-generation"
+# Repo root (path dinamico, non hardcoded)
+PROJ_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# ── Job management (SLURM) ────────────────────────────────────────────────────
+
+# Controlla i miei job attivi (richiede SLURM)
+alias myjobs='squeue --me --format="%.10i %.20j %.8T %.10M %.6D %.20R %o"'
+
+# Info dettagliata su un job (uso: jobinfo <JOB_ID>)
+jobinfo() {
+    if [ -z "$1" ]; then
+        echo "Uso: jobinfo <JOB_ID>"
+        return 1
+    fi
+    scontrol show job "$1"
+}
+
+# Cancella un job (uso: killjob <JOB_ID>)
+alias killjob='scancel'
+
+# Cancella tutti i miei job (solo SLURM)
+alias killalljobs='scancel --me'
+
+# ── Navigazione / utilità ─────────────────────────────────────────────────────
+
+alias proj='cd "$PROJ_DIR"'
+
+# Mostra gli ultimi log SLURM (se presenti)
+lastlog() {
+    local n="${1:-200}"
+    mkdir -p "$PROJ_DIR/experiments/logs"
+    # shellcheck disable=SC2012
+    local f
+    f=$(ls -t "$PROJ_DIR"/experiments/logs/slurm-*.log 2>/dev/null | head -1)
+    if [ -z "$f" ]; then
+        echo "Nessun log trovato in experiments/logs (attesi file slurm-*.log)."
+        return 1
+    fi
+    echo "Log: $f"
+    tail -n "$n" "$f"
+}
+
+# Segui live l'ultimo log SLURM (uso: followlog)
+followlog() {
+    mkdir -p "$PROJ_DIR/experiments/logs"
+    # shellcheck disable=SC2012
+    local f
+    f=$(ls -t "$PROJ_DIR"/experiments/logs/slurm-*.log 2>/dev/null | head -1)
+    if [ -z "$f" ]; then
+        echo "Nessun log trovato in experiments/logs (attesi file slurm-*.log)."
+        return 1
+    fi
+    echo "Follow: $f"
+    tail -f "$f"
+}
+
+# ── Training (CIFAR) ─────────────────────────────────────────────────────────
+
+# Lancia fine-tuning teacher (locale) (uso: train-teacher [--config PATH])
+train-teacher() {
+    local config="configs/teacher_finetune.yaml"
+    if [ "${1:-}" = "--config" ] && [ -n "${2:-}" ]; then
+        config="$2"
+    fi
+    cd "$PROJ_DIR" && python3 -u src/training/train_teacher_finetune.py --config "$config"
+}
+
+# Lancia baseline student (locale) (uso: train-baseline [--config PATH])
+train-baseline() {
+    local config="configs/phase1_baseline.yaml"
+    if [ "${1:-}" = "--config" ] && [ -n "${2:-}" ]; then
+        config="$2"
+    fi
+    cd "$PROJ_DIR" && python3 -u src/training/train_baseline.py --config "$config"
+}
+
+# Versioni SLURM (richiedono batch scripts adattati)
+sbatch-teacher() {
+    local config="configs/teacher_finetune.yaml"
+    if [ "${1:-}" = "--config" ] && [ -n "${2:-}" ]; then
+        config="$2"
+    fi
+    cd "$PROJ_DIR" && CONFIG="$config" sbatch cluster/train.sh
+}
+
+sbatch-baseline() {
+    local config="configs/phase1_baseline.yaml"
+    if [ "${1:-}" = "--config" ] && [ -n "${2:-}" ]; then
+        config="$2"
+    fi
+    cd "$PROJ_DIR" && CONFIG="$config" sbatch cluster/train.sh
+}
+
+# ── Coda training (SLURM) ─────────────────────────────────────────────────────
+
+# Aggiungi uno o più config YAML alla coda (uso: queue-add configs/a.yaml [configs/b.yaml ...])
+queue-add() {
+    cd "$PROJ_DIR" || return 1
+    if [ $# -lt 1 ]; then
+        echo "Uso: queue-add <config1.yaml> [config2.yaml ...]"
+        return 1
+    fi
+    touch .train_queue
+    for cfg in "$@"; do
+        echo "$cfg" >> .train_queue
+        echo "[queue] aggiunto: $cfg"
+    done
+    echo "[queue] tot: $(wc -l < .train_queue | tr -d ' ')"
+}
+
+# Mostra coda e ultimi submit (uso: queue-status)
+queue-status() {
+    cd "$PROJ_DIR" || return 1
+    echo "== Queue (.train_queue) =="
+    if [ ! -f .train_queue ] || [ ! -s .train_queue ]; then
+        echo "(vuota)"
+    else
+        nl -ba .train_queue
+    fi
+    echo ""
+    echo "== Last submits (.train_queue_state) =="
+    if [ -f .train_queue_state ]; then
+        tail -n 10 .train_queue_state
+    else
+        echo "(nessuno)"
+    fi
+}
+
+# Sottomette il prossimo job se non hai job attivi (uso: queue-next)
+queue-next() {
+    cd "$PROJ_DIR" && bash cluster/queue_next.sh
+}
+
+# Avvia watcher in background (uso: queue-start [--poll 60])
+queue-start() {
+    cd "$PROJ_DIR" || return 1
+    mkdir -p experiments/logs
+    nohup bash cluster/queue_watch.sh "$@" > experiments/logs/train_queue_watcher.log 2>&1 &
+    echo "[queue] watcher avviato (log: experiments/logs/train_queue_watcher.log)"
+}
+
+# Ferma watcher (uso: queue-stop)
+queue-stop() {
+    cd "$PROJ_DIR" || return 1
+    if [ -f .train_queue_pid ]; then
+        local pid
+        pid=$(cat .train_queue_pid)
+        if kill "$pid" 2>/dev/null; then
+            echo "[queue] watcher fermato (pid $pid)"
+        else
+            echo "[queue] watcher non trovato (pid $pid)"
+        fi
+        rm -f .train_queue_pid
+    else
+        echo "[queue] nessun watcher attivo"
+    fi
+}
+
+# ── Help ─────────────────────────────────────────────────────────────────────
+
+claudio() {
+    echo "Comandi disponibili (CIFAR/KD):"
+    echo ""
+    echo "── SLURM ──"
+    echo "  myjobs            — lista job attivi (SLURM)"
+    echo "  jobinfo <ID>      — dettagli job (SLURM)"
+    echo "  killjob <ID>      — cancella job (SLURM)"
+    echo "  killalljobs       — cancella tutti i tuoi job (SLURM)"
+    echo ""
+    echo "── Repo ──"
+    echo "  proj              — cd nella root del repo"
+    echo "  lastlog [N]       — mostra ultime N righe dell'ultimo log"
+    echo "  followlog         — tail -f dell'ultimo log"
+    echo ""
+    echo "── Training ──"
+    echo "  train-teacher [--config PATH]   — fine-tune teacher (locale)"
+    echo "  train-baseline [--config PATH]  — baseline student (locale)"
+    echo "  sbatch-teacher [--config PATH]  — fine-tune teacher via SLURM (cluster/train.sh)"
+    echo "  sbatch-baseline [--config PATH] — baseline student via SLURM (cluster/train.sh)"
+    echo ""
+    echo "── Queue (SLURM) ──"
+    echo "  queue-add <cfg...>  — aggiungi config YAML alla coda"
+    echo "  queue-status        — mostra coda + ultimi submit"
+    echo "  queue-next          — sottometti prossimo job (se nessun job attivo)"
+    echo "  queue-start [--poll N] — watcher che sottomette automaticamente"
+    echo "  queue-stop          — ferma watcher"
+}
+
+# IMPORTANTE:
+# Questo file era stato importato da una repo GRPO e conteneva molti alias/pipeline
+# non pertinenti (chain/watcher/plot/table/eval GRPO). Interrompiamo qui l'esecuzione
+# per evitare di sovrascrivere i comandi sopra con versioni GRPO-only.
+return 0
 
 # ── Job management ───────────────────────────────────────────────────────────
 

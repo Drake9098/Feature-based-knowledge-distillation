@@ -1,13 +1,13 @@
 #!/bin/bash
 # ============================================================================
-# SLURM batch script — Training sul cluster DMI
+# SLURM batch script — Training (teacher/baseline) per questo repo
 #
 # Uso:
-#   CONFIG=experiments/configs/nothink/curriculum/grpo_smollm2_360m.yaml sbatch cluster/train.sh
-#   CONFIG=experiments/configs/nothink/standard/grpo_qwen05.yaml EXTRA_ARGS="--resume" sbatch cluster/train.sh
+#   CONFIG=configs/teacher_finetune.yaml sbatch cluster/train.sh
+#   CONFIG=configs/phase1_baseline.yaml sbatch cluster/train.sh
 #
-# Per il primo avvio eseguire prima:  bash cluster/setup.sh
-# (dentro una sessione interattiva Apptainer)
+# Nota: la parte Apptainer è cluster-specific. Se non usi container, lo script
+# esegue direttamente python3 sul nodo.
 # ============================================================================
 
 # ┌────────────────────────────────────────────────────────┐
@@ -22,7 +22,7 @@
 #SBATCH --gres=gpu:1 --gres=shard:22528
 #SBATCH --mail-type=END,FAIL
 #SBATCH --mail-user=bellamacina50@gmail.com
-#SBATCH --output=logs/slurm-train-%j.log
+#SBATCH --output=experiments/logs/slurm-train-%j.log
 
 # ── Variabili progetto ────────────────────────────────────────────────────────
 EXTRA_ARGS="${EXTRA_ARGS:-}"
@@ -49,43 +49,38 @@ echo "  Extra:     ${EXTRA_ARGS}"
 echo "============================================"
 
 # Crea directory logs se non esiste
-mkdir -p logs
+mkdir -p experiments/logs
 
-# wandb in modalità offline (non c'è internet sul cluster per studenti)
-# I dottorandi con accesso a internet possono commentare questa riga
 export WANDB_MODE=offline
 
-# Percorso progetto
-cd "$HOME/GRPO-strict-generation"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$REPO_ROOT"
 
-# Genera dataset base solo se necessario (non-curriculum mode).
-# In curriculum mode i dataset di training vengono generati dal codice Python
-# per ogni stage, e l'eval dataset bilanciato viene creato automaticamente.
-CURRICULUM_ENABLED=$(python3 -c "
-import yaml, sys
-cfg = yaml.safe_load(open('${CONFIG}'))
-c = cfg.get('curriculum', {})
-print('1' if c and c.get('enabled', False) else '0')
-" 2>/dev/null || echo "0")
+# (Opzionale) verifica asset offline (dataset/pesi) prima di partire
+bash cluster/check_offline_assets.sh --soft || true
 
-if [ "$CURRICULUM_ENABLED" = "0" ] && [ ! -d "data/synthetic/train" ]; then
-    echo "Dataset non trovato, generazione in corso..."
-    apptainer run --nv /shared/sifs/latest.sif \
-        python -m src.datasets.synthetic_dataset --config "${CONFIG}"
-elif [ "$CURRICULUM_ENABLED" = "1" ]; then
-    echo "Curriculum mode: dataset generati automaticamente dal training"
+echo ""
+echo "Avvio training..."
+echo ""
+
+# ── Esecuzione ────────────────────────────────────────────────────────────────
+# Se vuoi usare un container, esporta APPTAINER_IMAGE=/path/to/image.sif
+# TODO: imposta APPTAINER_IMAGE in base al tuo cluster (es. /shared/sifs/latest.sif).
+if [ -n "${APPTAINER_IMAGE:-}" ]; then
+    echo "Container: $APPTAINER_IMAGE"
+    apptainer run --nv \
+        --env WANDB_MODE=offline \
+        --env PYTORCH_ALLOC_CONF=garbage_collection_threshold:0.8 \
+        "$APPTAINER_IMAGE" \
+        bash -lc "python3 -u -c \"import sys; print(sys.version)\" && python3 -u -m pip --version && python3 -u -m src.training.train_teacher_finetune --config '${CONFIG}' ${EXTRA_ARGS}"
+else
+    # Heuristica: sceglie lo script in base al nome del config
+    if [[ "$CONFIG" == *teacher* ]]; then
+        python3 -u src/training/train_teacher_finetune.py --config "${CONFIG}" ${EXTRA_ARGS}
+    else
+        python3 -u src/training/train_baseline.py --config "${CONFIG}" ${EXTRA_ARGS}
+    fi
 fi
-
-echo ""
-echo "Avvio training dentro Apptainer..."
-echo ""
-
-# ── Esecuzione dentro container Apptainer ─────────────────────────────────────
-apptainer run --nv \
-    --env WANDB_MODE=offline \
-    --env PYTORCH_ALLOC_CONF=garbage_collection_threshold:0.8 \
-    /shared/sifs/latest.sif \
-    python -m src.training --config "${CONFIG}" ${EXTRA_ARGS}
 
 echo ""
 echo "============================================"

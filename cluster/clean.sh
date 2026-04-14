@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================================================
-# Pulizia workspace sul cluster DMI
+# Pulizia workspace per questo repo (CIFAR/KD)
 #
 # Uso:
 #   bash cluster/clean.sh          # dry-run (mostra cosa cancellerebbe)
@@ -8,7 +8,8 @@
 # ============================================================================
 
 set -e
-cd "$HOME/GRPO-strict-generation"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$REPO_ROOT"
 
 FORCE=0
 if [ "$1" = "--force" ]; then
@@ -26,62 +27,39 @@ fi
 echo "Pulizia workspace: $PWD"
 echo ""
 
-# ── Svuota data/ (dataset generato, verrà ricreato da train.sh) ───────────
-echo "[1/9] data/ (dataset sintetico)"
-if [ -d "data" ]; then
-    $CMD data/*
+# ── Dataset (non cancelliamo di default) ─────────────────────────────────────
+echo "[1/7] dataset/ (NON toccato di default)"
+echo "      (se vuoi cancellarlo, fallo manualmente: rm -rf dataset/)"
+
+# ── Checkpoints ──────────────────────────────────────────────────────────────
+echo "[2/7] checkpoints/"
+if [ -d "checkpoints" ]; then
+    $CMD checkpoints/*
 fi
 
-# ── Svuota experiments/ tranne configs/ ───────────────────────────────────
-echo "[2/9] experiments/ (checkpoints, logs — preserva configs/)"
-if [ -d "experiments/checkpoints" ]; then
-    $CMD experiments/checkpoints/*
-fi
-if [ -d "experiments/logs" ]; then
-    $CMD experiments/logs/*
-fi
-
-# ── Svuota logs/ (SLURM log) ─────────────────────────────────────────────
-echo "[3/9] logs/ (SLURM output)"
+# ── Logs SLURM / locali ─────────────────────────────────────────────────────
+echo "[3/7] logs/"
 if [ -d "logs" ]; then
     $CMD logs/*
 fi
 
+# ── runs/ (TensorBoard) ─────────────────────────────────────────────────────
+echo "[4/7] runs/"
+if [ -d "runs" ]; then
+    $CMD runs/*
+fi
+
 # ── Cache Python ─────────────────────────────────────────────────────────
-echo "[4/9] __pycache__/"
+echo "[5/7] __pycache__/"
 find . -type d -name "__pycache__" -print -exec $CMD {} + 2>/dev/null || true
 
-# ── Artifact LoRA/Unsloth del GRPOTrainer ────────────────────────────────
-echo "[5/9] grpo_trainer_lora_model_*/"
-for d in grpo_trainer_lora_model_*; do
-    [ -d "$d" ] && $CMD "$d"
-done
-
-# ── wandb offline runs ──────────────────────────────────────────────────
-echo "[6/9] wandb/ (cartella legacy)"
+# ── wandb offline runs (se presenti) ─────────────────────────────────────
+echo "[6/7] wandb/"
 if [ -d "wandb" ]; then
     $CMD wandb
 fi
 
-# ── Unsloth compiled cache ──────────────────────────────────────────────
-echo "[7/9] unsloth_compiled_cache/"
-if [ -d "unsloth_compiled_cache" ]; then
-    $CMD unsloth_compiled_cache
-fi
-
-# ── Notebooks (non servono sul cluster) ──────────────────────────────────
-echo "[8/9] notebooks/"
-if [ -d "notebooks" ]; then
-    $CMD notebooks
-fi
-
-# ── File watcher / pipeline ──────────────────────────────────────────────
-echo "[9/9] .job_chain, .chain_pid, .chain_failed, .chain_stopped, .monitor_cache"
-[ -f ".job_chain" ] && $CMD .job_chain
-[ -f ".chain_pid" ] && $CMD .chain_pid
-[ -f ".chain_failed" ] && $CMD .chain_failed
-[ -f ".chain_stopped" ] && $CMD .chain_stopped
-[ -f ".monitor_cache" ] && $CMD .monitor_cache
+echo "[7/7] file di stato pipeline (nessuno in questo repo)"
 
 echo ""
 if [ "$FORCE" = "0" ]; then

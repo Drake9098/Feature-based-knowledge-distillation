@@ -34,7 +34,7 @@ model:
   teacher_weights_path: ./weights/resnet50_imagenet1k_v1.pth
 
 checkpoint:
-  dir: ./checkpoints
+  dir: ./experiments/checkpoints
   # Output: checkpoints/teacher_finetune_cifar100_teacher.pt → usa come teacher_weights_path dopo il fine-tuning
 
 metrics:
