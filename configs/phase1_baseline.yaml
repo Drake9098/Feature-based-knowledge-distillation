@@ -15,11 +15,14 @@ data:
   # TODO: split train/val opzionale (random_split) in build_cifar100_loaders se serve early stopping
 
 training:
-  epochs: 1 # TODO: impostare un valore realistico per la convergenza
+  epochs: 200
   learning_rate: 0.1
   momentum: 0.9
   weight_decay: 5.0e-4
-  # TODO: scheduler, warmup, ecc. se servono
+  scheduler:
+    name: multistep
+    milestones: [60, 120, 160]
+    gamma: 0.2
 
 model:
   teacher_name: resnet50

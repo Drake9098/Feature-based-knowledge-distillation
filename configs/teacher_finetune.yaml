@@ -13,13 +13,18 @@ data:
   drop_last: false
 
 training:
-  epochs: 1 # TODO: aumentare fino a convergenza (teacher deve essere forte per la KD)
+  epochs: 50
   # LR più alto per layer reinizializzati (conv1 3x3, fc 100 classi)
-  learning_rate_new: 0.1
+  learning_rate_new: 0.01 # alternativa più aggressiva: 0.05
   # Backbone: lr = learning_rate_new * backbone_lr_mult (es. 0.01 → 100× più piccolo)
   backbone_lr_mult: 0.01
   momentum: 0.9
   weight_decay: 5.0e-4
+  scheduler:
+    name: multistep
+    # TODO: se vuoi una ricetta specifica, rendi espliciti i drop (es. [30, 40] per 50 epoche).
+    milestones: [30, 40]
+    gamma: 0.1
 
 model:
   teacher_name: resnet50

@@ -7,6 +7,7 @@ from pathlib import Path
 
 import torch
 import torch.nn as nn
+from torch.optim.lr_scheduler import MultiStepLR
 
 from src.data.cifar100 import build_cifar100_loaders
 from src.models.student import build_student
@@ -65,9 +66,40 @@ def main() -> None:
     student = student.to(device)
 
     criterion = nn.CrossEntropyLoss()
-    optimizer = torch.optim.SGD(student.parameters(), lr=cfg["training"]["learning_rate"], momentum=cfg["training"]["momentum"], weight_decay=cfg["training"]["weight_decay"])
+    t_cfg = cfg["training"]
+    optimizer = torch.optim.SGD(
+        student.parameters(),
+        lr=float(t_cfg["learning_rate"]),
+        momentum=float(t_cfg["momentum"]),
+        weight_decay=float(t_cfg["weight_decay"]),
+    )
+
+    # Scheduler (MultiStepLR) opzionale via YAML:
+    # training:
+    #   scheduler:
+    #     name: multistep
+    #     milestones: [60, 120, 160]
+    #     gamma: 0.2
+    scheduler = None
+    scheduler_cfg = t_cfg.get("scheduler")
+    if isinstance(scheduler_cfg, dict):
+        name = str(scheduler_cfg.get("name", "multistep")).lower().strip()
+        if name in {"multistep", "multi_step", "multisteplr"}:
+            milestones = scheduler_cfg.get("milestones")
+            if milestones is None:
+                # Default: schedule tipico CIFAR su 200 epoche
+                # TODO: rendi esplicito nel YAML se cambi epochs.
+                milestones = [60, 120, 160]
+            gamma = float(scheduler_cfg.get("gamma", 0.2))
+            scheduler = MultiStepLR(optimizer, milestones=[int(m) for m in milestones], gamma=gamma)
+        else:
+            raise ValueError(
+                f"Scheduler non supportato: {name}. Usa name: multistep oppure rimuovi training.scheduler."
+            )
+    if scheduler is not None:
+        print(f"Scheduler: MultiStepLR milestones={scheduler.milestones} gamma={scheduler.gamma}")
     
-    epochs = int(cfg["training"]["epochs"])
+    epochs = int(t_cfg["epochs"])
     for epoch in range(epochs):
         student.train()
         running_loss = 0.0
@@ -99,11 +131,16 @@ def main() -> None:
 
         acc = accuracy_percent(student, eval_loader, device)
 
+        if scheduler is not None:
+            scheduler.step()
+        lr = optimizer.param_groups[0]["lr"]
+
         print(
             f"Epoch {epoch + 1}/{epochs} | "
             f"train_loss: {train_loss:.4f} | "
             f"test_loss: {eval_loss:.4f} | "
-            f"test_acc: {acc:.2f}%"
+            f"test_acc: {acc:.2f}% | "
+            f"lr: {lr:.6g}"
         )
 
     size_mib = model_size_mb(student)
@@ -121,6 +158,7 @@ def main() -> None:
         {
             "model_state_dict": student.state_dict(),
             "optimizer_state_dict": optimizer.state_dict(),
+            "scheduler_state_dict": None if scheduler is None else scheduler.state_dict(),
             "epoch": epochs,
             "test_acc": acc,
             "train_loss": train_loss,
