@@ -1,18 +1,23 @@
-"""Fase 1 — addestramento student con sola cross-entropy (nessuna distillazione)."""
+"""Fase 1 — addestramento baseline con sola cross-entropy (nessuna distillazione)."""
 
 from __future__ import annotations
 
 import argparse
 from pathlib import Path
+from datetime import datetime
+import time
 
 import torch
 import torch.nn as nn
 from torch.optim.lr_scheduler import MultiStepLR
 
 from src.data.cifar100 import build_cifar100_loaders
-from src.models.student import build_student
-from src.utils.checkpoint import save_checkpoint
+from src.models import baseline
+from src.models.baseline import build_baseline
+from src.utils.checkpoint import load_checkpoint, save_checkpoint
 from src.utils.config import load_yaml_config
+from src.utils.logging import setup_run_logger
+from src.utils.metrics_jsonl import MetricsWriter
 from src.utils.seed import set_seed
 from src.training.metrics import accuracy_percent, inference_latency_ms, model_size_mb
 
@@ -32,7 +37,7 @@ def _resolve_device(name: str) -> torch.device:
 
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Fase 1 — baseline student (CE only)")
+    p = argparse.ArgumentParser(description="Fase 1 — baseline baseline (CE only)")
     p.add_argument(
         "--config",
         type=Path,
@@ -62,13 +67,13 @@ def main() -> None:
         data_config=data_cfg,
     )
 
-    student = build_student(cfg["model"])
-    student = student.to(device)
+    baseline = build_baseline(cfg["model"])
+    baseline = baseline.to(device)
 
     criterion = nn.CrossEntropyLoss()
     t_cfg = cfg["training"]
     optimizer = torch.optim.SGD(
-        student.parameters(),
+        baseline.parameters(),
         lr=float(t_cfg["learning_rate"]),
         momentum=float(t_cfg["momentum"]),
         weight_decay=float(t_cfg["weight_decay"]),
@@ -98,76 +103,224 @@ def main() -> None:
             )
     if scheduler is not None:
         print(f"Scheduler: MultiStepLR milestones={scheduler.milestones} gamma={scheduler.gamma}")
-    
+
+    ckpt_root = Path(cfg["checkpoint"]["dir"])
+    exp_name = str(cfg["experiment"]["name"])
+    ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    base_run_dir = ckpt_root / exp_name / ts
+    run_dir = base_run_dir
+    if run_dir.exists():
+        i = 2
+        while True:
+            candidate = ckpt_root / exp_name / f"{ts}_{i}"
+            if not candidate.exists():
+                run_dir = candidate
+                break
+            i += 1
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    logger = setup_run_logger(run_dir=run_dir, training_type="baseline", name="train.baseline")
+    metrics = MetricsWriter(
+        path=run_dir / "metrics.jsonl",
+        experiment_name=exp_name,
+        training_type="baseline",
+        run_dir=run_dir,
+        config_path=str(args.config),
+    )
+    logger.info("Run dir: %s", run_dir.resolve())
+    logger.info("Metrics:  %s", (run_dir / "metrics.jsonl").resolve())
+
+    ckpt_stem = f"{exp_name}_baseline"
+    ckpt_last_path = run_dir / f"{ckpt_stem}_last.pt"
+    ckpt_best_path = run_dir / f"{ckpt_stem}_best.pt"
+    best_acc = float("-inf")
+
     epochs = int(t_cfg["epochs"])
+    steps_per_epoch = len(train_loader)
+    log_every_steps = int(t_cfg.get("log_every_steps", 50))
+    global_step = 0
+    metrics.write(
+        {
+            "kind": "meta",
+            "epoch": 0,
+            "epochs_total": epochs,
+            "step": 0,
+            "steps_per_epoch": steps_per_epoch,
+            "msg": "run_start",
+        }
+    )
     for epoch in range(epochs):
-        student.train()
+        baseline.train()
         running_loss = 0.0
         n_train = 0
+        epoch_start = time.perf_counter()
+        last_step_t = time.perf_counter()
         for inputs, labels in train_loader:
+            step_start = time.perf_counter()
             inputs = inputs.to(device, non_blocking=True)
             labels = labels.to(device, non_blocking=True)
             optimizer.zero_grad(set_to_none=True)
-            outputs = student(inputs)
+            outputs = baseline(inputs)
             loss = criterion(outputs, labels)
             loss.backward()
             optimizer.step()
             running_loss += loss.item() * labels.size(0)
             n_train += labels.size(0)
+            global_step += 1
+
+            if log_every_steps > 0 and (global_step % log_every_steps == 0):
+                step_time_s = step_start - last_step_t
+                last_step_t = step_start
+                metrics.write(
+                    {
+                        "kind": "train",
+                        "epoch": epoch + 1,
+                        "epochs_total": epochs,
+                        "step": (global_step % steps_per_epoch) or steps_per_epoch,
+                        "steps_per_epoch": steps_per_epoch,
+                        "loss": float(running_loss / max(n_train, 1)),
+                        "lr": float(optimizer.param_groups[0]["lr"]),
+                        "step_time_s": float(step_time_s),
+                    }
+                )
         train_loss = running_loss / max(n_train, 1)
 
-        student.eval()
+        baseline.eval()
         eval_loss_sum = 0.0
         n_eval = 0
         with torch.inference_mode():
             for inputs, labels in eval_loader:
                 inputs = inputs.to(device, non_blocking=True)
                 labels = labels.to(device, non_blocking=True)
-                outputs = student(inputs)
+                outputs = baseline(inputs)
                 batch_loss = criterion(outputs, labels)
                 eval_loss_sum += batch_loss.item() * labels.size(0)
                 n_eval += labels.size(0)
         eval_loss = eval_loss_sum / max(n_eval, 1)
 
-        acc = accuracy_percent(student, eval_loader, device)
+        acc = accuracy_percent(baseline, eval_loader, device)
 
         if scheduler is not None:
             scheduler.step()
         lr = optimizer.param_groups[0]["lr"]
+        epoch_time_s = time.perf_counter() - epoch_start
 
-        print(
+        logger.info(
             f"Epoch {epoch + 1}/{epochs} | "
             f"train_loss: {train_loss:.4f} | "
             f"test_loss: {eval_loss:.4f} | "
             f"test_acc: {acc:.2f}% | "
             f"lr: {lr:.6g}"
         )
+        metrics.write(
+            {
+                "kind": "eval",
+                "epoch": epoch + 1,
+                "epochs_total": epochs,
+                "step": steps_per_epoch,
+                "steps_per_epoch": steps_per_epoch,
+                "loss": float(eval_loss),
+                "acc": float(acc),
+                "lr": float(lr),
+                "epoch_time_s": float(epoch_time_s),
+            }
+        )
 
-    size_mib = model_size_mb(student)
-    lat_ms = inference_latency_ms(student, eval_loader, device, cfg["metrics"])
-    print(
-        f"Final | model_size: {size_mib:.2f} MiB | "
-        f"inference: {lat_ms:.4f} ms/image (incl. host→device transfer)"
+        # Checkpoint "last" a ogni epoca (progressivo).
+        save_checkpoint(
+            ckpt_last_path,
+            {
+                "model_state_dict": baseline.state_dict(),
+                "optimizer_state_dict": optimizer.state_dict(),
+                "scheduler_state_dict": None if scheduler is None else scheduler.state_dict(),
+                "epoch": epoch + 1,
+                "test_acc": acc,
+                "train_loss": train_loss,
+                "test_loss": eval_loss,
+                "is_best": False,
+                "best_acc_so_far": best_acc,
+            },
+        )
+
+        # Checkpoint "best" (sovrascritto) quando migliora la metrica.
+        if acc > best_acc:
+            best_acc = acc
+            save_checkpoint(
+                ckpt_best_path,
+                {
+                    "model_state_dict": baseline.state_dict(),
+                    "optimizer_state_dict": optimizer.state_dict(),
+                    "scheduler_state_dict": None if scheduler is None else scheduler.state_dict(),
+                    "epoch": epoch + 1,
+                    "test_acc": acc,
+                    "train_loss": train_loss,
+                    "test_loss": eval_loss,
+                    "is_best": True,
+                    "best_acc_so_far": best_acc,
+                },
+            )
+            logger.info("[ckpt] nuovo best: acc=%.2f%% -> %s", best_acc, ckpt_best_path.resolve())
+
+    # Eval finale usando il best model (non l'ultima epoca).
+    if ckpt_best_path.is_file():
+        best_state = load_checkpoint(ckpt_best_path, map_location="cpu")
+        baseline.load_state_dict(best_state["model_state_dict"], strict=True)
+        baseline = baseline.to(device)
+        baseline.eval()
+
+    # Ricalcola loss/acc finali sul best model
+    baseline.eval()
+    eval_loss_sum = 0.0
+    n_eval = 0
+    with torch.inference_mode():
+        for inputs, labels in eval_loader:
+            inputs = inputs.to(device, non_blocking=True)
+            labels = labels.to(device, non_blocking=True)
+            outputs = baseline(inputs)
+            batch_loss = criterion(outputs, labels)
+            eval_loss_sum += batch_loss.item() * labels.size(0)
+            n_eval += labels.size(0)
+    final_eval_loss = eval_loss_sum / max(n_eval, 1)
+    final_acc = accuracy_percent(baseline, eval_loader, device)
+
+    size_mib = model_size_mb(baseline)
+    lat_ms = inference_latency_ms(baseline, eval_loader, device, cfg["metrics"])
+    logger.info(
+        f"Final(best) | test_loss: {final_eval_loss:.4f} | test_acc: {final_acc:.2f}% | "
+        f"model_size: {size_mib:.2f} MiB | inference: {lat_ms:.4f} ms/image "
+        f"(incl. host→device transfer)"
     )
 
-    ckpt_dir = Path(cfg["checkpoint"]["dir"])
-    ckpt_name = f"{cfg['experiment']['name']}_student_baseline.pt"
-    ckpt_path = ckpt_dir / ckpt_name
+    ckpt_path = run_dir / f"{ckpt_stem}_final.pt"
     save_checkpoint(
         ckpt_path,
         {
-            "model_state_dict": student.state_dict(),
+            "model_state_dict": baseline.state_dict(),
             "optimizer_state_dict": optimizer.state_dict(),
             "scheduler_state_dict": None if scheduler is None else scheduler.state_dict(),
             "epoch": epochs,
-            "test_acc": acc,
-            "train_loss": train_loss,
-            "test_loss": eval_loss,
+            "test_acc": final_acc,
+            "test_loss": final_eval_loss,
             "model_size_mib": size_mib,
             "inference_ms_per_image": lat_ms,
+            "best_checkpoint_path": str(ckpt_best_path),
         },
     )
-    print(f"Checkpoint salvato: {ckpt_path.resolve()}")
+    logger.info("Checkpoint baseline (final): %s", ckpt_path.resolve())
+    logger.info("Checkpoint baseline (last):  %s", ckpt_last_path.resolve())
+    logger.info("Checkpoint baseline (best):  %s", ckpt_best_path.resolve())
+    metrics.write(
+        {
+            "kind": "meta",
+            "epoch": epochs,
+            "epochs_total": epochs,
+            "step": steps_per_epoch,
+            "steps_per_epoch": steps_per_epoch,
+            "msg": "run_end",
+            "final_acc": float(final_acc),
+            "final_eval_loss": float(final_eval_loss),
+        }
+    )
 
 
 if __name__ == "__main__":

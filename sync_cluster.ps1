@@ -85,7 +85,7 @@ function Upload {
         Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
 
     Write-Progress -Activity "Upload" -Status "Creating remote directories..." -PercentComplete 2
-    ssh @idArgs $SSH_TARGET "mkdir -p ~/${REMOTE_DIR}/configs ~/${REMOTE_DIR}/logs ~/${REMOTE_DIR}/checkpoints ~/${REMOTE_DIR}/dataset ~/${REMOTE_DIR}/weights"
+    ssh @idArgs $SSH_TARGET "mkdir -p ~/${REMOTE_DIR}/configs ~/${REMOTE_DIR}/experiments/logs ~/${REMOTE_DIR}/experiments/checkpoints ~/${REMOTE_DIR}/dataset ~/${REMOTE_DIR}/weights"
 
     # dataset/ e weights/: upload incrementale (nessun rm -rf remoto); se assenti in locale → [SKIP].
     $dirsNoFullReplace = @("dataset", "weights")
@@ -96,6 +96,7 @@ function Upload {
         "scripts",
         "dataset",
         "weights",
+        "pyproject.toml",
         "requirements.txt",
         "README.md",
         "action_plan.md"
@@ -134,9 +135,25 @@ function Upload {
         $step++
         $localPath = Join-Path $LOCAL $item
         $pct = [int](($step / [math]::Max($totalSteps, 1)) * 100)
-        $mode = if ($item -in $dirsNoFullReplace) { "(incrementale, senza cancellare la cartella remota)" } else { "" }
+
+        # --- NUOVO CONTROLLO: Salta scp se è una directory protetta ed esiste già ---
+        if ($item -in $dirsNoFullReplace) {
+            # Controlla sul server se la cartella esiste e non è vuota
+            $remoteCheck = ssh @idArgs $SSH_TARGET "if [ -d ~/${REMOTE_DIR}/$item ] && [ ""`$(ls -A ~/${REMOTE_DIR}/$item 2>/dev/null)"" ]; then echo 'EXISTS'; fi"
+            if ($remoteCheck -match 'EXISTS') {
+                Write-Progress -Activity "Upload" -Status "[$step/$totalSteps] SKIP $item/" -PercentComplete $pct
+                Write-Host "  [SKIP] $item/ (già presente sul cluster)" -ForegroundColor Yellow
+                continue # Salta direttamente il trasferimento
+            }
+            $mode = "(nuovo upload)"
+        } else {
+            $mode = ""
+        }
+        # ----------------------------------------------------------------------------
+
         Write-Progress -Activity "Upload" -Status "[$step/$totalSteps] scp -r $item/ $mode" -PercentComplete $pct
         Write-Host "  Copiando $item/ $mode ..." -ForegroundColor Gray
+        # Se la cartella remota non esiste (o l'abbiamo appena creata), scp -r copierà l'intera directory
         scp @idArgs -r -q "$localPath" "${REMOTE}/"
     }
 
@@ -169,29 +186,29 @@ function DownloadAll {
 
 function DownloadLogs {
     Write-Progress -Activity "Download" -Status "Downloading logs/..." -PercentComplete 0
-    $dest = Join-Path $LOCAL "logs"
-    Download-RemoteDir "logs" $dest
+    $dest = Join-Path $LOCAL "experiments\\logs"
+    Download-RemoteDir "experiments/logs" $dest
     Write-Progress -Activity "Download" -Completed
-    Write-Host "  -> saved to logs\" -ForegroundColor Gray
+    Write-Host "  -> saved to experiments\\logs\\" -ForegroundColor Gray
 }
 
 function DownloadCheckpoints {
     Write-Progress -Activity "Download" -Status "Downloading checkpoints/..." -PercentComplete 0
-    $dest = Join-Path $LOCAL "checkpoints"
-    Download-RemoteDir "checkpoints" $dest
+    $dest = Join-Path $LOCAL "experiments\\checkpoints"
+    Download-RemoteDir "experiments/checkpoints" $dest
     Write-Progress -Activity "Download" -Completed
-    Write-Host "  -> saved to checkpoints\" -ForegroundColor Gray
+    Write-Host "  -> saved to experiments\\checkpoints\\" -ForegroundColor Gray
 }
 
 function DownloadWandb {
-    Write-Progress -Activity "Download" -Status "Downloading logs/ (cerca wandb offline sotto logs/)..." -PercentComplete 0
+    Write-Progress -Activity "Download" -Status "Downloading experiments/logs/ (cerca wandb offline sotto experiments/logs/)..." -PercentComplete 0
 
-    $dest = Join-Path $LOCAL "logs"
+    $dest = Join-Path $LOCAL "experiments\\logs"
     New-Item -ItemType Directory -Force -Path $dest | Out-Null
-    Download-RemoteDir "logs" $dest
+    Download-RemoteDir "experiments/logs" $dest
 
     Write-Progress -Activity "Download" -Completed
-    Write-Host "  -> saved under logs\" -ForegroundColor Gray
+    Write-Host "  -> saved under experiments\\logs\\" -ForegroundColor Gray
     Write-Host ""
     Write-Host "Per sincronizzare run offline su wandb.ai:" -ForegroundColor Yellow
     Write-Host "  .\sync_cluster.ps1 -Action sync-wandb" -ForegroundColor Yellow
@@ -212,9 +229,9 @@ function SyncWandb {
         }
     }
 
-    $logsDir = Join-Path $LOCAL "logs"
+    $logsDir = Join-Path $LOCAL "experiments\\logs"
     if (-not (Test-Path $logsDir)) {
-        Write-Host "No logs\ found. Run download-wandb first." -ForegroundColor Red
+        Write-Host "No experiments\\logs\\ found. Run download-wandb first." -ForegroundColor Red
         return
     }
 

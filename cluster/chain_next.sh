@@ -41,11 +41,14 @@ is_oom_failure() {
     [ "$state" = "OUT_OF_MEMORY" ] && return 0
     [ "$exit_code" = "137" ] && return 0
     # Cerca nel log messaggi OOM (CUDA OOM, vLLM OOM, Linux OOM killer, SLURM shard)
-    local logfile="$PROJ_DIR/logs/slurm-train-${job_id}.log"
-    if [ -f "$logfile" ]; then
-        if tail -200 "$logfile" | grep -qiE 'out.of.memory|OutOfMemoryError|CUDA out of memory|oom-kill|OOM|torch.cuda.OutOfMemoryError|std::bad_alloc|excessive GPU RAM|GPU RAM usage'; then
-            return 0
-        fi
+    local logfile=""
+    for f in "$PROJ_DIR"/experiments/logs/slurm-train-*-"${job_id}".log; do
+        [ -f "$f" ] || continue
+        logfile="$f"
+        break
+    done
+    if [ -n "$logfile" ] && tail -200 "$logfile" | grep -qiE 'out.of.memory|OutOfMemoryError|CUDA out of memory|oom-kill|OOM|torch.cuda.OutOfMemoryError|std::bad_alloc|excessive GPU RAM|GPU RAM usage'; then
+        return 0
     fi
     return 1
 }
@@ -54,11 +57,14 @@ is_oom_failure() {
 # Questi errori spesso sono causati da pressione VRAM e possono risolversi con un restart.
 is_cuda_transient_failure() {
     local job_id="$1" exit_code="$2" state="$3" tag="$4"
-    local logfile="$PROJ_DIR/logs/slurm-train-${job_id}.log"
-    if [ -f "$logfile" ]; then
-        if tail -200 "$logfile" | grep -qiE 'cudaErrorIllegalAddress|illegal memory access|cudaErrorLaunchFailure|device-side assert|AcceleratorError.*CUDA error'; then
-            return 0
-        fi
+    local logfile=""
+    for f in "$PROJ_DIR"/experiments/logs/slurm-train-*-"${job_id}".log; do
+        [ -f "$f" ] || continue
+        logfile="$f"
+        break
+    done
+    if [ -n "$logfile" ] && tail -200 "$logfile" | grep -qiE 'cudaErrorIllegalAddress|illegal memory access|cudaErrorLaunchFailure|device-side assert|AcceleratorError.*CUDA error'; then
+        return 0
     fi
     return 1
 }

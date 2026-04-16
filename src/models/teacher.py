@@ -44,9 +44,38 @@ def build_teacher(model_config: Dict[str, Any]) -> nn.Module:
         if not isinstance(state, dict):
             raise TypeError("Il file teacher deve essere un dict (state_dict o checkpoint).")
 
-        if "model_state_dict" in state:
-            state = state["model_state_dict"]
+        state = state.get("state_dict", state.get("model_state_dict", state))
 
-        model.load_state_dict(state, strict=False)
+        keys_to_delete = ["conv1.weight", "fc.weight", "fc.bias"]
+        common_prefixes = ["", "module.", "model.", "teacher."]
+        for base_key in keys_to_delete:
+            for prefix in common_prefixes:
+                state.pop(f"{prefix}{base_key}", None)
+
+        # Carica solo i pesi compatibili (shape match). Serve perché:
+        # - conv1 è 3x3 (CIFAR) invece di 7x7 (ImageNet)
+        # - fc è num_classes (100) invece di 1000 (ImageNet)
+        model_sd = model.state_dict()
+        filtered: Dict[str, torch.Tensor] = {}
+        skipped: list[str] = []
+        for k, v in state.items():
+            if k not in model_sd:
+                continue
+            if isinstance(v, torch.Tensor) and model_sd[k].shape == v.shape:
+                filtered[k] = v
+            else:
+                skipped.append(k)
+
+        missing, unexpected = model.load_state_dict(filtered, strict=False)
+        if skipped:
+            print(
+                f"[teacher] checkpoint parziale: caricate {len(filtered)}/{len(state)} chiavi; "
+                f"saltate {len(skipped)} per mismatch di shape (es. conv1/fc)."
+            )
+        if unexpected:
+            print(f"[teacher] chiavi inattese nel checkpoint (ignorate): {len(unexpected)}")
+        if missing:
+            # Con stem CIFAR è normale che conv1/fc risultino missing.
+            print(f"[teacher] chiavi mancanti (ok se conv1/fc): {len(missing)}")
 
     return model

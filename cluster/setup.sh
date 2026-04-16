@@ -5,8 +5,8 @@
 # Uso (dal login node, dalla root del repo):
 #   bash cluster/setup.sh
 #
-# Dipendenze: solo da configs/environment.yml (conda + sezione pip).
-# Serve conda o mamba in PATH (es. module load …). Micromamba opzionale.
+# Dipendenze: pip install --user (in ~/.local) dal pyproject.toml in root.
+# Non crea virtualenv.
 #
 # Lo script rilancia se stesso dentro srun + Apptainer automaticamente.
 # ============================================================================
@@ -26,89 +26,43 @@ set -e
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
-ENV_YML="$REPO_ROOT/configs/environment.yml"
+PYPROJECT="$REPO_ROOT/pyproject.toml"
 
 echo "=== Setup Feature-based Knowledge Distillation (Cluster DMI) ==="
 echo "Repo: $REPO_ROOT"
 echo ""
 
-if [ ! -f "$ENV_YML" ]; then
-    echo "Manca $ENV_YML"
+if [ ! -f "$PYPROJECT" ]; then
+    echo "Manca $PYPROJECT"
     exit 1
 fi
 
-CONDA_ENV_NAME="$(grep -E '^[[:space:]]*name:' "$ENV_YML" | head -1 | awk '{print $2}' | tr -d '\r')"
-if [ -z "$CONDA_ENV_NAME" ]; then
-    CONDA_ENV_NAME="dl-project"
-fi
-
-# True se la prima colonna di `conda info --envs` / `mamba env list` coincide col nome.
-conda_env_table_has_name() {
-    local list_cmd="$1" name="$2"
-    $list_cmd 2>/dev/null | awk -v n="$name" '
-        $1 == n { found = 1 }
-        END { exit found ? 0 : 1 }
-    '
-}
-
-# ── 1. Conda / mamba / micromamba ───────────────────────────────────────────
-echo "Ambiente conda da: $ENV_YML (nome: $CONDA_ENV_NAME)"
-
-if command -v micromamba &>/dev/null; then
-    echo "Usando: micromamba"
-    export MAMBA_ROOT_PREFIX="${MAMBA_ROOT_PREFIX:-$HOME/micromamba}"
-    eval "$(micromamba shell hook -s bash)"
-    if conda_env_table_has_name "micromamba env list" "$CONDA_ENV_NAME"; then
-        echo "Aggiornamento ambiente esistente..."
-        micromamba env update -f "$ENV_YML" -n "$CONDA_ENV_NAME" --prune
-    else
-        echo "Creazione ambiente..."
-        micromamba create -f "$ENV_YML" -y
-    fi
-    micromamba activate "$CONDA_ENV_NAME"
-elif command -v mamba &>/dev/null; then
-    echo "Usando: mamba"
-    if command -v conda &>/dev/null; then
-        # shellcheck disable=SC1091
-        source "$(conda info --base)/etc/profile.d/conda.sh"
-    fi
-    eval "$(mamba shell hook --shell bash)"
-    if conda_env_table_has_name "mamba env list" "$CONDA_ENV_NAME"; then
-        echo "Aggiornamento ambiente esistente..."
-        mamba env update -f "$ENV_YML" -n "$CONDA_ENV_NAME" --prune
-    else
-        echo "Creazione ambiente..."
-        mamba env create -f "$ENV_YML"
-    fi
-    mamba activate "$CONDA_ENV_NAME"
-elif command -v conda &>/dev/null; then
-    echo "Usando: conda"
-    # shellcheck disable=SC1091
-    source "$(conda info --base)/etc/profile.d/conda.sh"
-    if conda_env_table_has_name "conda env list" "$CONDA_ENV_NAME"; then
-        echo "Aggiornamento ambiente esistente..."
-        conda env update -f "$ENV_YML" -n "$CONDA_ENV_NAME" --prune
-    else
-        echo "Creazione ambiente..."
-        conda env create -f "$ENV_YML"
-    fi
-    conda activate "$CONDA_ENV_NAME"
-else
-    echo "Nessun di: micromamba, mamba, conda trovato in PATH."
-    echo "Carica un modulo conda (es. module load miniforge3) oppure installa Micromamba, poi rilancia."
-    exit 1
-fi
-
-PY="$(command -v python)"
+# ── 1. Python + pip ──────────────────────────────────────────────────────────
+PY="$(command -v python3 || true)"
 if [ -z "$PY" ]; then
-    PY="$(command -v python3)"
+    PY="$(command -v python || true)"
 fi
 if [ -z "$PY" ]; then
-    echo "Python non trovato dopo l'attivazione dell'ambiente conda."
+    echo "❌ Python non trovato in PATH."
     exit 1
 fi
-echo "Python ambiente: $($PY --version 2>&1) ($PY)"
+echo "Python: $($PY --version 2>&1) ($PY)"
 echo ""
+
+echo "📦 Aggiornamento pip..."
+$PY -m pip install --user -U pip
+
+echo "📦 Installazione progetto e dipendenze in ~/.local (pip --user)..."
+$PY -m pip install --user -e .
+
+echo ""
+echo "NOTA: se il cluster non ha accesso a internet, pip potrebbe fallire."
+echo "      In quel caso serve un wheelhouse offline o un modulo/container che già includa i pacchetti."
+echo ""
+
+# ── 2b. Directory esperimenti (logs/checkpoints) ──────────────────────────────
+echo "Creazione directory output..."
+mkdir -p "$REPO_ROOT/experiments/logs" "$REPO_ROOT/experiments/checkpoints"
 
 # ── 2. Verifica GPU ──────────────────────────────────────────────────────────
 echo "Rilevamento GPU..."
@@ -124,7 +78,7 @@ if torch.cuda.is_available():
     print(f'  GPU: {name} (CC {cc[0]}.{cc[1]}, {vram:.1f} GB)')
 else:
     print('  GPU: NESSUNA GPU rilevata')
-") || { echo "Errore nel rilevamento GPU (torch nell'ambiente conda?)"; exit 1; }
+") || { echo "Errore nel rilevamento GPU (torch installato e importabile?)"; exit 1; }
 
 echo "$GPU_INFO"
 
@@ -135,34 +89,25 @@ bash "$REPO_ROOT/cluster/check_offline_assets.sh" --soft
 
 # ── 4. Verifica installazione ─────────────────────────────────────────────────
 echo ""
-echo "Verifica installazione (pacchetti da environment.yml)..."
+echo "Verifica installazione (pip --user)..."
 $PY -c "
-from importlib.metadata import version as pkg_version
-import torch
-import torchvision
-import yaml
-import numpy as np
-import pandas as pd
-import matplotlib
-import sklearn
-import tqdm
-print(f'  PyTorch:       {torch.__version__}')
-print(f'  Torchvision:   {torchvision.__version__}')
-print(f'  PyYAML:        {yaml.__version__}')
-print(f'  NumPy:         {np.__version__}')
-print(f'  Pandas:        {pd.__version__}')
-print(f'  Matplotlib:    {matplotlib.__version__}')
-print(f'  scikit-learn:  {sklearn.__version__}')
-print(f'  TensorBoard:   {pkg_version(\"tensorboard\")}')
-print(f'  tqdm:          {tqdm.__version__}')
+import importlib
+mods = ['torch', 'torchvision', 'yaml', 'tqdm']
+missing = []
+for m in mods:
+    try:
+        importlib.import_module(m)
+    except Exception:
+        missing.append(m)
+print('  OK' if not missing else f'  Missing: {missing}')
 "
 
 echo ""
 echo "=== Setup completato ==="
-echo "Ambiente conda: $CONDA_ENV_NAME — attivalo nei job con: conda activate $CONDA_ENV_NAME"
-echo "(o mamba/micromamba activate, a seconda di cosa hai usato sopra)"
+echo "Pip user-site: ~/.local (pip install --user)"
 echo ""
 echo "Prossimi passi:"
 echo "  1. Controllo asset (salti scp se già tutto presente): bash cluster/check_offline_assets.sh"
-echo "  2. Allinea cluster/train.sh (path repo, CONFIG=configs/... , Python dell'env)."
-echo "  3. Esempio: CONFIG=configs/phase1_baseline.yaml sbatch cluster/train.sh"
+echo "  2. Training teacher:  CONFIG=configs/teacher_finetune.yaml sbatch cluster/train.sh"
+echo "  3. Training baseline: CONFIG=configs/phase1_baseline.yaml sbatch cluster/train.sh"
+echo "  4. Log: experiments/logs/   Checkpoint: experiments/checkpoints/"

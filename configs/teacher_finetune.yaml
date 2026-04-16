@@ -19,7 +19,7 @@ training:
   # Backbone: lr = learning_rate_new * backbone_lr_mult (es. 0.01 → 100× più piccolo)
   backbone_lr_mult: 0.01
   momentum: 0.9
-  weight_decay: 5.0e-4
+  weight_decay: 1.0e-3
   scheduler:
     name: multistep
     # TODO: se vuoi una ricetta specifica, rendi espliciti i drop (es. [30, 40] per 50 epoche).

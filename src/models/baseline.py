@@ -6,7 +6,7 @@ import torch.nn as nn
 import torchvision.models as models
 
 
-def build_student(model_config: Dict[str, Any]) -> nn.Module:
+def build_baseline(model_config: Dict[str, Any]) -> nn.Module:
     """ResNet-18 adattato a CIFAR (32×32): conv1 3×3 stride 1, senza primo max pooling.
 
     ``model_config`` deve contenere almeno ``num_classes``. Opzionale: ``student_name``.

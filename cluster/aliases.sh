@@ -85,13 +85,24 @@ train-baseline() {
     cd "$PROJ_DIR" && python3 -u src/training/train_baseline.py --config "$config"
 }
 
+# Monitor real-time delle metriche (JSONL) di una run.
+# Uso: monitor-run experiments/checkpoints/<exp>/<timestamp>
+monitor-run() {
+    if [ -z "${1:-}" ]; then
+        echo "Uso: monitor-run <RUN_DIR>"
+        echo "Esempio: monitor-run experiments/checkpoints/teacher_finetune_cifar100/2026-04-15_17-51-26"
+        return 1
+    fi
+    cd "$PROJ_DIR" && python3 -u -m src.utils.monitor_metrics "$1"
+}
+
 # Versioni SLURM (richiedono batch scripts adattati)
 sbatch-teacher() {
     local config="configs/teacher_finetune.yaml"
     if [ "${1:-}" = "--config" ] && [ -n "${2:-}" ]; then
         config="$2"
     fi
-    cd "$PROJ_DIR" && CONFIG="$config" sbatch cluster/train.sh
+    cd "$PROJ_DIR" && bash cluster/submit_train.sh --config "$config"
 }
 
 sbatch-baseline() {
@@ -99,7 +110,7 @@ sbatch-baseline() {
     if [ "${1:-}" = "--config" ] && [ -n "${2:-}" ]; then
         config="$2"
     fi
-    cd "$PROJ_DIR" && CONFIG="$config" sbatch cluster/train.sh
+    cd "$PROJ_DIR" && bash cluster/submit_train.sh --config "$config"
 }
 
 # ── Coda training (SLURM) ─────────────────────────────────────────────────────

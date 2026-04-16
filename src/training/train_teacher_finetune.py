@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+from datetime import datetime
+import time
 
 import torch
 import torch.nn as nn
@@ -12,8 +14,10 @@ from torch.optim.lr_scheduler import MultiStepLR
 from src.data.cifar100 import build_cifar100_loaders
 from src.models.teacher import build_teacher
 from src.training.metrics import accuracy_percent, inference_latency_ms, model_size_mb
-from src.utils.checkpoint import save_checkpoint
+from src.utils.checkpoint import load_checkpoint, save_checkpoint
 from src.utils.config import load_yaml_config
+from src.utils.logging import setup_run_logger
+from src.utils.metrics_jsonl import MetricsWriter
 from src.utils.seed import set_seed
 
 
@@ -101,7 +105,7 @@ def main() -> None:
 
     param_groups = _param_groups_for_resnet_teacher(teacher, lr_new, lr_backbone, wd)
     optimizer = torch.optim.SGD(param_groups, momentum=momentum)
-    criterion = nn.CrossEntropyLoss()
+    criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
 
     # Scheduler (MultiStepLR) opzionale via YAML:
     # training:
@@ -131,12 +135,63 @@ def main() -> None:
     if scheduler is not None:
         print(f"Scheduler: MultiStepLR milestones={scheduler.milestones} gamma={scheduler.gamma}")
 
+    ckpt_root = Path(cfg["checkpoint"]["dir"])
+    # Salviamo checkpoint progressivi e best model in una sottocartella per-run basata su timestamp,
+    # così run diverse non si sovrascrivono tra loro.
+    exp_name = str(cfg["experiment"]["name"])
+    ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    base_run_dir = ckpt_root / exp_name / ts
+    run_dir = base_run_dir
+    if run_dir.exists():
+        i = 2
+        while True:
+            candidate = ckpt_root / exp_name / f"{ts}_{i}"
+            if not candidate.exists():
+                run_dir = candidate
+                break
+            i += 1
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    logger = setup_run_logger(run_dir=run_dir, training_type="teacher", name="train.teacher")
+    metrics = MetricsWriter(
+        path=run_dir / "metrics.jsonl",
+        experiment_name=exp_name,
+        training_type="teacher",
+        run_dir=run_dir,
+        config_path=str(args.config),
+    )
+    logger.info("Run dir: %s", run_dir.resolve())
+    logger.info("Metrics:  %s", (run_dir / "metrics.jsonl").resolve())
+
+    # Salviamo checkpoint progressivi e best model (sovrascritto quando migliora).
+    # Esempio: <exp>_teacher_last.pt e <exp>_teacher_best.pt
+    ckpt_stem = f"{exp_name}_teacher"
+    ckpt_last_path = run_dir / f"{ckpt_stem}_last.pt"
+    ckpt_best_path = run_dir / f"{ckpt_stem}_best.pt"
+    best_acc = float("-inf")
+
     epochs = int(t_cfg["epochs"])
+    steps_per_epoch = len(train_loader)
+    log_every_steps = int(t_cfg.get("log_every_steps", 50))
+    global_step = 0
+    metrics.write(
+        {
+            "kind": "meta",
+            "epoch": 0,
+            "epochs_total": epochs,
+            "step": 0,
+            "steps_per_epoch": steps_per_epoch,
+            "msg": "run_start",
+        }
+    )
     for epoch in range(epochs):
         teacher.train()
         running_loss = 0.0
         n_train = 0
+        epoch_start = time.perf_counter()
+        last_step_t = time.perf_counter()
         for inputs, labels in train_loader:
+            step_start = time.perf_counter()
             inputs = inputs.to(device, non_blocking=True)
             labels = labels.to(device, non_blocking=True)
             optimizer.zero_grad(set_to_none=True)
@@ -146,6 +201,23 @@ def main() -> None:
             optimizer.step()
             running_loss += loss.item() * labels.size(0)
             n_train += labels.size(0)
+            global_step += 1
+
+            if log_every_steps > 0 and (global_step % log_every_steps == 0):
+                step_time_s = step_start - last_step_t
+                last_step_t = step_start
+                metrics.write(
+                    {
+                        "kind": "train",
+                        "epoch": epoch + 1,
+                        "epochs_total": epochs,
+                        "step": (global_step % steps_per_epoch) or steps_per_epoch,
+                        "steps_per_epoch": steps_per_epoch,
+                        "loss": float(running_loss / max(n_train, 1)),
+                        "lr": float(optimizer.param_groups[0]["lr"]),
+                        "step_time_s": float(step_time_s),
+                    }
+                )
         train_loss = running_loss / max(n_train, 1)
 
         teacher.eval()
@@ -166,25 +238,101 @@ def main() -> None:
         if scheduler is not None:
             scheduler.step()
         lrs = [pg["lr"] for pg in optimizer.param_groups]
+        epoch_time_s = time.perf_counter() - epoch_start
 
-        print(
+        logger.info(
             f"Epoch {epoch + 1}/{epochs} | "
             f"train_loss: {train_loss:.4f} | "
             f"test_loss: {eval_loss:.4f} | "
             f"test_acc: {acc:.2f}% | "
             f"lr(new/backbone): {lrs[0]:.6g}/{lrs[1]:.6g}",
         )
+        # Usiamo lr del primo group per display/monitor (conv1+fc)
+        metrics.write(
+            {
+                "kind": "eval",
+                "epoch": epoch + 1,
+                "epochs_total": epochs,
+                "step": steps_per_epoch,
+                "steps_per_epoch": steps_per_epoch,
+                "loss": float(eval_loss),
+                "acc": float(acc),
+                "lr": float(lrs[0]),
+                "epoch_time_s": float(epoch_time_s),
+            }
+        )
+
+        # Checkpoint "last" a ogni epoca (progressivo).
+        save_checkpoint(
+            ckpt_last_path,
+            {
+                "model_state_dict": teacher.state_dict(),
+                "optimizer_state_dict": optimizer.state_dict(),
+                "scheduler_state_dict": None if scheduler is None else scheduler.state_dict(),
+                "epoch": epoch + 1,
+                "test_acc": acc,
+                "train_loss": train_loss,
+                "test_loss": eval_loss,
+                "lr_new": lr_new,
+                "lr_backbone": lr_backbone,
+                "is_best": False,
+                "best_acc_so_far": best_acc,
+            },
+        )
+
+        # Checkpoint "best" (sovrascritto) quando migliora la metrica.
+        if acc > best_acc:
+            best_acc = acc
+            save_checkpoint(
+                ckpt_best_path,
+                {
+                    "model_state_dict": teacher.state_dict(),
+                    "optimizer_state_dict": optimizer.state_dict(),
+                    "scheduler_state_dict": None if scheduler is None else scheduler.state_dict(),
+                    "epoch": epoch + 1,
+                    "test_acc": acc,
+                    "train_loss": train_loss,
+                    "test_loss": eval_loss,
+                    "lr_new": lr_new,
+                    "lr_backbone": lr_backbone,
+                    "is_best": True,
+                    "best_acc_so_far": best_acc,
+                },
+            )
+            logger.info("[ckpt] nuovo best: acc=%.2f%% -> %s", best_acc, ckpt_best_path.resolve())
+
+    # Eval finale usando il best model (non l'ultima epoca).
+    if ckpt_best_path.is_file():
+        best_state = load_checkpoint(ckpt_best_path, map_location="cpu")
+        teacher.load_state_dict(best_state["model_state_dict"], strict=True)
+        teacher = teacher.to(device)
+        teacher.eval()
+
+    # Ricalcola loss/acc finali sul best model
+    teacher.eval()
+    eval_loss_sum = 0.0
+    n_eval = 0
+    with torch.inference_mode():
+        for inputs, labels in eval_loader:
+            inputs = inputs.to(device, non_blocking=True)
+            labels = labels.to(device, non_blocking=True)
+            logits = teacher(inputs)
+            batch_loss = criterion(logits, labels)
+            eval_loss_sum += batch_loss.item() * labels.size(0)
+            n_eval += labels.size(0)
+    final_eval_loss = eval_loss_sum / max(n_eval, 1)
+    final_acc = accuracy_percent(teacher, eval_loader, device)
 
     size_mib = model_size_mb(teacher)
     lat_ms = inference_latency_ms(teacher, eval_loader, device, cfg["metrics"])
-    print(
-        f"Final | model_size: {size_mib:.2f} MiB | "
-        f"inference: {lat_ms:.4f} ms/image (incl. host→device transfer)",
+    logger.info(
+        f"Final(best) | test_loss: {final_eval_loss:.4f} | test_acc: {final_acc:.2f}% | "
+        f"model_size: {size_mib:.2f} MiB | inference: {lat_ms:.4f} ms/image "
+        f"(incl. host→device transfer)",
     )
 
-    ckpt_dir = Path(cfg["checkpoint"]["dir"])
-    ckpt_name = f"{cfg['experiment']['name']}_teacher.pt"
-    ckpt_path = ckpt_dir / ckpt_name
+    # Salviamo anche un "final" (con metriche aggiornate sul best) per comodità.
+    ckpt_path = run_dir / f"{ckpt_stem}_final.pt"
     save_checkpoint(
         ckpt_path,
         {
@@ -192,16 +340,30 @@ def main() -> None:
             "optimizer_state_dict": optimizer.state_dict(),
             "scheduler_state_dict": None if scheduler is None else scheduler.state_dict(),
             "epoch": epochs,
-            "test_acc": acc,
-            "train_loss": train_loss,
-            "test_loss": eval_loss,
+            "test_acc": final_acc,
+            "test_loss": final_eval_loss,
             "model_size_mib": size_mib,
             "inference_ms_per_image": lat_ms,
             "lr_new": lr_new,
             "lr_backbone": lr_backbone,
+            "best_checkpoint_path": str(ckpt_best_path),
         },
     )
-    print(f"Checkpoint teacher: {ckpt_path.resolve()}")
+    logger.info("Checkpoint teacher (final): %s", ckpt_path.resolve())
+    logger.info("Checkpoint teacher (last):  %s", ckpt_last_path.resolve())
+    logger.info("Checkpoint teacher (best):  %s", ckpt_best_path.resolve())
+    metrics.write(
+        {
+            "kind": "meta",
+            "epoch": epochs,
+            "epochs_total": epochs,
+            "step": steps_per_epoch,
+            "steps_per_epoch": steps_per_epoch,
+            "msg": "run_end",
+            "final_acc": float(final_acc),
+            "final_eval_loss": float(final_eval_loss),
+        }
+    )
 
 
 if __name__ == "__main__":

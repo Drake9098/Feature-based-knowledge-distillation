@@ -15,6 +15,7 @@ runs/
 data/
 dataset/
 weights/
+logs/
 
 # Editor / OS
 .idea/
