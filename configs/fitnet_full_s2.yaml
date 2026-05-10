@@ -1,0 +1,43 @@
+# FitNets Stage 2 — Config C (Full / Multi-Layer): full KD con warm-start da Stage 1 (tutti i layer)
+experiment:
+  name: fitnet_full_s2
+  seed: 42
+  device: cuda
+
+data:
+  root: ./dataset
+  batch_size: 128
+  num_workers: 4
+  download: false
+  pin_memory: true
+  drop_last: false
+
+training:
+  epochs: 200
+  learning_rate: 0.1
+  momentum: 0.9
+  weight_decay: 5.0e-4
+  scheduler:
+    name: multistep
+    milestones: [60, 120, 160]
+    gamma: 0.2
+
+distillation:
+  temperature: 3.0
+  alpha: 0.1
+
+model:
+  teacher_name: resnet50
+  student_name: resnet18
+  num_classes: 100
+  pretrained_teacher: false
+  teacher_weights_path: null
+  teacher_checkpoint: ./experiments/checkpoints/teacher_finetune_cifar100/2026-05-08_18-59-26/teacher_finetune_cifar100_teacher_best.pt
+  student_checkpoint: ./experiments/checkpoints/fitnet_full_s1/2026-05-09_16-36-57/fitnet_full_s1_s1_best.pt
+
+checkpoint:
+  dir: ./experiments/checkpoints
+
+metrics:
+  latency_num_batches: 50
+  latency_warmup_batches: 5

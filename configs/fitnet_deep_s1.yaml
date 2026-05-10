@@ -1,0 +1,45 @@
+# FitNets Stage 1 — Config B (Deep): hint su layer4
+# Trasmissione di astrazioni semantiche finali (layer più profondo prima del classifier).
+# Loss: MSE(regressor(student.layer4), teacher.layer4)
+# Solo student[conv1..layer4] + regressore vengono aggiornati; fc congelato.
+experiment:
+  name: fitnet_deep_s1
+  seed: 42
+  device: cuda
+
+data:
+  root: ./dataset
+  batch_size: 128
+  num_workers: 4
+  download: false
+  pin_memory: true
+  drop_last: false
+
+training:
+  epochs: 100
+  learning_rate: 0.0005
+  momentum: 0.9
+  weight_decay: 5.0e-4
+
+fitnet:
+  hint_layers:
+    - teacher_layer: layer4   # ResNet-50: output 2048 canali @ 4×4
+      student_layer: layer4   # ResNet-18: output 512 canali @ 4×4
+      teacher_channels: 2048
+      student_channels: 512
+  # fc congelato automaticamente
+
+model:
+  teacher_name: resnet50
+  student_name: resnet18
+  num_classes: 100
+  pretrained_teacher: false
+  teacher_weights_path: null
+  teacher_checkpoint: ./experiments/checkpoints/teacher_finetune_cifar100/PLACEHOLDER/teacher_finetune_cifar100_teacher_best.pt
+
+checkpoint:
+  dir: ./experiments/checkpoints
+
+metrics:
+  latency_num_batches: 50
+  latency_warmup_batches: 5

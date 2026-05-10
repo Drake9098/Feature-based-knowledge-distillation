@@ -1,0 +1,50 @@
+# FitNets Stage 1 — Config A (Middle): hint su layer2
+# Proposta originale del paper: stabilizzazione tramite layer intermedio.
+# Loss: MSE(regressor(student.layer2), teacher.layer2)
+# Solo student[conv1..layer2] + regressore vengono aggiornati; layer3/4/fc congelati.
+experiment:
+  name: fitnet_middle_s1
+  seed: 42
+  device: cuda
+
+data:
+  root: ./dataset
+  batch_size: 128
+  num_workers: 4
+  download: false
+  pin_memory: true
+  drop_last: false
+
+training:
+  epochs: 100
+  learning_rate: 0.0005   # LR basso per allineamento feature (paper FitNets)
+  momentum: 0.9
+  weight_decay: 5.0e-4
+  # Scheduler opzionale: commentalo per LR costante (consigliato per Stage 1)
+  # scheduler:
+  #   name: multistep
+  #   milestones: [60, 80]
+  #   gamma: 0.1
+
+fitnet:
+  hint_layers:
+    - teacher_layer: layer2   # ResNet-50: output 512 canali @ 16×16
+      student_layer: layer2   # ResNet-18: output 128 canali @ 16×16
+      teacher_channels: 512
+      student_channels: 128
+  # layer3, layer4, fc vengono congelati automaticamente
+
+model:
+  teacher_name: resnet50
+  student_name: resnet18
+  num_classes: 100
+  pretrained_teacher: false
+  teacher_weights_path: null
+  teacher_checkpoint: ./experiments/checkpoints/teacher_finetune_cifar100/PLACEHOLDER/teacher_finetune_cifar100_teacher_best.pt
+
+checkpoint:
+  dir: ./experiments/checkpoints
+
+metrics:
+  latency_num_batches: 50
+  latency_warmup_batches: 5
