@@ -1,0 +1,45 @@
+# Fase 2 — Knowledge Distillation standard (Hinton KD): teacher ResNet-50 → student ResNet-18
+# Loss: L = alpha * CE(hard) + (1 - alpha) * T^2 * KL(soft_student || soft_teacher)
+experiment:
+  name: phase2_kd
+  seed: 42
+  device: cuda # usa "cpu" o "auto" se necessario
+
+data:
+  root: ./dataset
+  batch_size: 128
+  num_workers: 4
+  download: false
+  pin_memory: true
+  drop_last: false
+
+training:
+  epochs: 200
+  learning_rate: 0.1
+  momentum: 0.9
+  weight_decay: 5.0e-4
+  scheduler:
+    name: multistep
+    milestones: [60, 120, 160]
+    gamma: 0.2
+
+distillation:
+  temperature: 4.0
+  alpha: 0.1
+
+model:
+  teacher_name: resnet50
+  student_name: resnet18
+  num_classes: 100
+  # pretrained_teacher: false → in train_kd.py i pesi ImageNet non servono;
+  # il teacher viene caricato direttamente da teacher_checkpoint (fine-tuned su CIFAR-100).
+  pretrained_teacher: false
+  teacher_weights_path: null
+  teacher_checkpoint: ./experiments/checkpoints/teacher_finetune_cifar100/2026-05-08_18-59-26/teacher_finetune_cifar100_teacher_best.pt
+
+checkpoint:
+  dir: ./experiments/checkpoints
+
+metrics:
+  latency_num_batches: 50
+  latency_warmup_batches: 5
