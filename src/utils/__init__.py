@@ -1,5 +1,11 @@
-from src.utils.checkpoint import load_checkpoint, save_checkpoint
-from src.utils.config import load_yaml_config
-from src.utils.seed import set_seed
+"""
+Utility del progetto.
 
-__all__ = ["load_checkpoint", "save_checkpoint", "load_yaml_config", "set_seed"]
+Import espliciti dai sottomoduli, es.:
+  from src.utils.checkpoint import load_checkpoint
+  from src.utils.config import load_yaml_config
+
+Non re-esportiamo nulla qui: un import eager di `checkpoint` caricherebbe PyTorch e
+romperebbe script leggeri (es. `python -m src.utils.monitor_metrics`) sul login node
+senza torch installato.
+"""
