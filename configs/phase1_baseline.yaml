@@ -9,9 +9,9 @@ data:
   root: ./dataset
   batch_size: 128
   num_workers: 4
-  download: false # true solo se il nodo può scaricare (locale); cluster offline → false
-  pin_memory: true # false se training solo CPU
-  drop_last: false # true se vuoi batch pieni con BatchNorm
+  download: false
+  pin_memory: true
+  drop_last: false
   # TODO: split train/val opzionale (random_split) in build_cifar100_loaders se serve early stopping
 
 training:
@@ -36,5 +36,5 @@ checkpoint:
   # TODO: naming run (timestamp, hyperparam) se vuoi più esperimenti paralleli
 
 metrics:
-  latency_num_batches: 50 # TODO: batch size per benchmark latenza (o singola immagine)
+  latency_num_batches: 50
   latency_warmup_batches: 5
