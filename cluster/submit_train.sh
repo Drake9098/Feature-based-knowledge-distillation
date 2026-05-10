@@ -43,7 +43,13 @@ if [ -z "$type" ]; then
     cfg_lc="$(echo "$CONFIG_ARG" | tr '[:upper:]' '[:lower:]')"
     if [[ "$cfg_lc" == *teacher* ]]; then
         type="teacher"
-    elif [[ "$cfg_lc" == *student* ]] || [[ "$cfg_lc" == *distill* ]] || [[ "$cfg_lc" == *kd* ]]; then
+    elif [[ "$cfg_lc" == *fitnet*s1* ]] || [[ "$cfg_lc" == *fitnet*stage1* ]]; then
+        type="fitnet-s1"
+    elif [[ "$cfg_lc" == *fitnet*s2* ]] || [[ "$cfg_lc" == *fitnet*stage2* ]]; then
+        type="fitnet-s2"
+    elif [[ "$cfg_lc" == *kd* ]] || [[ "$cfg_lc" == *distill* ]]; then
+        type="kd"
+    elif [[ "$cfg_lc" == *student* ]]; then
         type="student"
     else
         type="baseline"

@@ -85,15 +85,152 @@ train-baseline() {
     cd "$PROJ_DIR" && python3 -u src/training/train_baseline.py --config "$config"
 }
 
+# Lancia KD standard (locale) (uso: train-kd [--config PATH])
+train-kd() {
+    local config="configs/phase2_kd.yaml"
+    if [ "${1:-}" = "--config" ] && [ -n "${2:-}" ]; then
+        config="$2"
+    fi
+    cd "$PROJ_DIR" && python3 -u src/training/train_kd.py --config "$config"
+}
+
+# Lancia FitNets Stage 1 (hint training, locale) (uso: train-fitnet-s1 [--config PATH])
+train-fitnet-s1() {
+    local config="configs/fitnet_middle_s1.yaml"
+    if [ "${1:-}" = "--config" ] && [ -n "${2:-}" ]; then
+        config="$2"
+    fi
+    cd "$PROJ_DIR" && python3 -u src/training/train_fitnet_stage1.py --config "$config"
+}
+
+# Lancia FitNets Stage 2 (full KD warm-start, locale) (uso: train-fitnet-s2 [--config PATH])
+train-fitnet-s2() {
+    local config="configs/fitnet_middle_s2.yaml"
+    if [ "${1:-}" = "--config" ] && [ -n "${2:-}" ]; then
+        config="$2"
+    fi
+    cd "$PROJ_DIR" && python3 -u src/training/train_fitnet_stage2.py --config "$config"
+}
+
 # Monitor real-time delle metriche (JSONL) di una run.
 # Uso: monitor-run experiments/checkpoints/<exp>/<timestamp>
+#      monitor-run   (senza argomenti) → come monitor-latest
 monitor-run() {
     if [ -z "${1:-}" ]; then
-        echo "Uso: monitor-run <RUN_DIR>"
-        echo "Esempio: monitor-run experiments/checkpoints/teacher_finetune_cifar100/2026-04-15_17-51-26"
+        monitor-latest
+        return $?
+    fi
+    cd "$PROJ_DIR" && export PYTHONPATH="$PROJ_DIR${PYTHONPATH:+:$PYTHONPATH}" && python3 -u -m src.utils.monitor_metrics "$1"
+}
+
+# Comando unico: stesso ambiente del training quando possibile (Apptainer), altrimenti Python locale.
+# Uso:  monitor
+#       monitor experiments/checkpoints/<exp>/<timestamp>
+#       monitor <path> --poll 0.5
+# Env:   APPTAINER_IMAGE (default /shared/sifs/latest.sif, come cluster/train.sh)
+monitor() {
+    case "${1:-}" in
+        -h|--help|"help")
+            echo "Uso: monitor [RUN_DIR] [extra args per monitor_metrics, es. --poll 0.5]"
+            echo "  Senza RUN_DIR: usa l'ultimo metrics.jsonl aggiornato sotto experiments/checkpoints/."
+            echo "  Env: APPTAINER_IMAGE (default: /shared/sifs/latest.sif)"
+            return 0
+            ;;
+    esac
+
+    cd "$PROJ_DIR" || return 1
+    export PYTHONPATH="$PROJ_DIR${PYTHONPATH:+:$PYTHONPATH}"
+    local APPTAINER_IMAGE="${APPTAINER_IMAGE:-/shared/sifs/latest.sif}"
+
+    local run_dir=""
+    local extra_args=()
+
+    if [ $# -eq 0 ]; then
+        :
+    elif [ -d "$1" ]; then
+        run_dir="$1"
+        shift
+        extra_args=("$@")
+    elif [ -d "$PROJ_DIR/$1" ]; then
+        run_dir="$PROJ_DIR/$1"
+        shift
+        extra_args=("$@")
+    else
+        echo "Directory non trovata: $1"
+        echo "Uso: monitor   oppure   monitor experiments/checkpoints/<exp>/<timestamp>"
         return 1
     fi
-    cd "$PROJ_DIR" && python3 -u -m src.utils.monitor_metrics "$1"
+
+    if [ -z "$run_dir" ]; then
+        mkdir -p experiments/checkpoints
+        local latest2
+        latest2=$(
+            find "$PROJ_DIR/experiments/checkpoints" -name 'metrics.jsonl' -type f -printf '%T@|%p\n' 2>/dev/null \
+                | sort -t'|' -nr -k1,1 | head -1 | cut -d'|' -f2-
+        )
+        if [ -z "$latest2" ] || [ ! -f "$latest2" ]; then
+            echo "Nessun metrics.jsonl trovato sotto experiments/checkpoints/."
+            echo "Avvia un training che scrive metrics.jsonl, oppure: monitor experiments/checkpoints/<exp>/<ts>"
+            return 1
+        fi
+        run_dir=$(dirname "$latest2")
+    fi
+
+    echo "Monitor: $run_dir"
+
+    if command -v apptainer >/dev/null 2>&1 && [ -f "$APPTAINER_IMAGE" ]; then
+        apptainer run --nv \
+            --env PYTHONPATH="$PYTHONPATH" \
+            "$APPTAINER_IMAGE" \
+            python3 -u -m src.utils.monitor_metrics "$run_dir" "${extra_args[@]}"
+        return $?
+    fi
+
+    # Login node: spesso `python3` ≠ Python usato da setup.sh (Apptainer/srun).
+    # Prova più interpreti; `rich` va installato per QUELLO che usi qui (es. python3 -m pip install --user rich).
+    local py=""
+    for cand in python3 python; do
+        if command -v "$cand" >/dev/null 2>&1 && "$cand" -c "import rich" >/dev/null 2>&1; then
+            py="$cand"
+            break
+        fi
+    done
+    if [ -z "$py" ]; then
+        echo "Manca 'rich' nel Python usato da questa shell e Apptainer non è disponibile."
+        echo "Diagnostica (login node vs setup in container = Python diversi):"
+        command -v python3 2>/dev/null && python3 --version 2>/dev/null || true
+        command -v python 2>/dev/null && python --version 2>/dev/null || true
+        echo ""
+        echo "Installa rich per l'interprete che userai qui, es.:"
+        echo "  python3 -m pip install --user -U rich"
+        echo "  python3 -c \"import rich; print(rich.__file__)\""
+        echo "oppure: module load apptainer  e  export APPTAINER_IMAGE=/shared/sifs/latest.sif"
+        return 1
+    fi
+
+    "$py" -u -m src.utils.monitor_metrics "$run_dir" "${extra_args[@]}"
+}
+
+# Monitor sulla run che sta scrivendo metrics.jsonl più di recente (di solito il job attivo).
+# Richiede GNU find (cluster Linux). Se hai più training in parallelo, specifica RUN_DIR con monitor-run.
+monitor-latest() {
+    cd "$PROJ_DIR" || return 1
+    mkdir -p experiments/checkpoints
+    local latest
+    latest=$(
+        find "$PROJ_DIR/experiments/checkpoints" -name 'metrics.jsonl' -type f -printf '%T@|%p\n' 2>/dev/null \
+            | sort -t'|' -nr -k1,1 | head -1 | cut -d'|' -f2-
+    )
+    if [ -z "$latest" ] || [ ! -f "$latest" ]; then
+        echo "Nessun metrics.jsonl trovato sotto experiments/checkpoints/."
+        echo "Avvia un training con il codice aggiornato, oppure: monitor-run <RUN_DIR>"
+        return 1
+    fi
+    local run_dir
+    run_dir=$(dirname "$latest")
+    echo "Monitor: $run_dir"
+    export PYTHONPATH="$PROJ_DIR${PYTHONPATH:+:$PYTHONPATH}"
+    python3 -u -m src.utils.monitor_metrics "$run_dir"
 }
 
 # Versioni SLURM (richiedono batch scripts adattati)
@@ -107,6 +244,30 @@ sbatch-teacher() {
 
 sbatch-baseline() {
     local config="configs/phase1_baseline.yaml"
+    if [ "${1:-}" = "--config" ] && [ -n "${2:-}" ]; then
+        config="$2"
+    fi
+    cd "$PROJ_DIR" && bash cluster/submit_train.sh --config "$config"
+}
+
+sbatch-kd() {
+    local config="configs/phase2_kd.yaml"
+    if [ "${1:-}" = "--config" ] && [ -n "${2:-}" ]; then
+        config="$2"
+    fi
+    cd "$PROJ_DIR" && bash cluster/submit_train.sh --config "$config"
+}
+
+sbatch-fitnet-s1() {
+    local config="configs/fitnet_middle_s1.yaml"
+    if [ "${1:-}" = "--config" ] && [ -n "${2:-}" ]; then
+        config="$2"
+    fi
+    cd "$PROJ_DIR" && bash cluster/submit_train.sh --config "$config"
+}
+
+sbatch-fitnet-s2() {
+    local config="configs/fitnet_middle_s2.yaml"
     if [ "${1:-}" = "--config" ] && [ -n "${2:-}" ]; then
         config="$2"
     fi
@@ -199,6 +360,7 @@ claudio() {
     echo "  train-baseline [--config PATH]  — baseline student (locale)"
     echo "  sbatch-teacher [--config PATH]  — fine-tune teacher via SLURM (cluster/train.sh)"
     echo "  sbatch-baseline [--config PATH] — baseline student via SLURM (cluster/train.sh)"
+    echo "  monitor [RUN_DIR]   — metriche live (Apptainer se disponibile); senza argomenti → ultima run"
     echo ""
     echo "── Queue (SLURM) ──"
     echo "  queue-add <cfg...>  — aggiungi config YAML alla coda"

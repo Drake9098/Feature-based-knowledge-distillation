@@ -1,10 +1,11 @@
 #!/bin/bash
 # ============================================================================
-# SLURM batch script — Training (teacher/baseline) per questo repo
+# SLURM batch script — Training (teacher/baseline/kd) per questo repo
 #
 # Uso:
 #   bash cluster/submit_train.sh --config configs/teacher_finetune.yaml
 #   bash cluster/submit_train.sh --config configs/phase1_baseline.yaml
+#   bash cluster/submit_train.sh --config configs/phase2_kd.yaml
 #
 # Nota: la parte Apptainer è cluster-specific. Se non usi container, lo script
 # esegue direttamente python3 sul nodo.
@@ -30,10 +31,12 @@ EXTRA_ARGS="${EXTRA_ARGS:-}"
 
 if [ -z "$CONFIG" ]; then
     echo "❌ CONFIG non impostato. Uso:"
-    echo "  CONFIG=experiments/configs/nothink/curriculum/grpo_smollm2_360m.yaml sbatch cluster/train.sh"
+    echo "  CONFIG=configs/phase1_baseline.yaml sbatch cluster/train.sh"
+    echo "  CONFIG=configs/teacher_finetune.yaml sbatch cluster/train.sh"
+    echo "  CONFIG=configs/phase2_kd.yaml        sbatch cluster/train.sh"
     echo ""
     echo "Config disponibili:"
-    find experiments/configs -name 'grpo_*.yaml' -type f 2>/dev/null | sort | sed 's/^/  /'
+    find configs -name '*.yaml' -type f 2>/dev/null | sort | sed 's/^/  /'
     exit 1
 fi
 
@@ -75,6 +78,12 @@ echo ""
 # Heuristica: sceglie lo script in base al nome del config
 if [[ "$CONFIG" == *teacher* ]]; then
     ENTRYPOINT="src/training/train_teacher_finetune.py"
+elif [[ "$CONFIG" == *fitnet*s1* || "$CONFIG" == *fitnet*stage1* ]]; then
+    ENTRYPOINT="src/training/train_fitnet_stage1.py"
+elif [[ "$CONFIG" == *fitnet*s2* || "$CONFIG" == *fitnet*stage2* ]]; then
+    ENTRYPOINT="src/training/train_fitnet_stage2.py"
+elif [[ "$CONFIG" == *kd* || "$CONFIG" == *distill* ]]; then
+    ENTRYPOINT="src/training/train_kd.py"
 else
     ENTRYPOINT="src/training/train_baseline.py"
 fi
