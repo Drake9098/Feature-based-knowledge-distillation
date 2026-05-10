@@ -19,6 +19,7 @@ from src.utils.config import load_yaml_config
 from src.utils.logging import setup_run_logger
 from src.utils.metrics_jsonl import MetricsWriter
 from src.utils.seed import set_seed
+from src.utils.training_summary import save_training_summary, utc_now_iso
 
 
 def _resolve_device(name: str) -> torch.device:
@@ -168,7 +169,15 @@ def main() -> None:
     ckpt_stem = f"{exp_name}_teacher"
     ckpt_last_path = run_dir / f"{ckpt_stem}_last.pt"
     ckpt_best_path = run_dir / f"{ckpt_stem}_best.pt"
+    ckpt_final_path = run_dir / f"{ckpt_stem}_final.pt"
     best_acc = float("-inf")
+    best_epoch: int | None = None
+    best_train_loss: float | None = None
+    best_test_loss: float | None = None
+    per_epoch: list[dict[str, float | int]] = []
+
+    run_t0 = time.perf_counter()
+    started_at = utc_now_iso()
 
     epochs = int(t_cfg["epochs"])
     steps_per_epoch = len(train_loader)
@@ -261,6 +270,17 @@ def main() -> None:
                 "epoch_time_s": float(epoch_time_s),
             }
         )
+        per_epoch.append(
+            {
+                "epoch": epoch + 1,
+                "train_loss": float(train_loss),
+                "test_loss": float(eval_loss),
+                "test_accuracy_percent": float(acc),
+                "lr_new": float(lrs[0]),
+                "lr_backbone": float(lrs[1]),
+                "epoch_time_s": float(epoch_time_s),
+            }
+        )
 
         # Checkpoint "last" a ogni epoca (progressivo).
         save_checkpoint(
@@ -283,6 +303,9 @@ def main() -> None:
         # Checkpoint "best" (sovrascritto) quando migliora la metrica.
         if acc > best_acc:
             best_acc = acc
+            best_epoch = epoch + 1
+            best_train_loss = float(train_loss)
+            best_test_loss = float(eval_loss)
             save_checkpoint(
                 ckpt_best_path,
                 {
@@ -332,7 +355,7 @@ def main() -> None:
     )
 
     # Salviamo anche un "final" (con metriche aggiornate sul best) per comodità.
-    ckpt_path = run_dir / f"{ckpt_stem}_final.pt"
+    ckpt_path = ckpt_final_path
     save_checkpoint(
         ckpt_path,
         {
@@ -364,6 +387,58 @@ def main() -> None:
             "final_eval_loss": float(final_eval_loss),
         }
     )
+
+    wall_s = time.perf_counter() - run_t0
+    summary_path = save_training_summary(
+        run_dir,
+        {
+            "experiment": exp_name,
+            "training_type": "teacher",
+            "config_path": str(args.config.resolve()),
+            "run_dir": str(run_dir.resolve()),
+            "device": str(device),
+            "seed": int(cfg["experiment"]["seed"]),
+            "started_at_utc": started_at,
+            "finished_at_utc": utc_now_iso(),
+            "wall_time_seconds": float(wall_s),
+            "epochs": epochs,
+            "steps_per_epoch": steps_per_epoch,
+            "per_epoch": per_epoch,
+            "optimizer": {
+                "lr_new": float(lr_new),
+                "lr_backbone": float(lr_backbone),
+                "weight_decay": float(wd),
+                "momentum": float(momentum),
+            },
+            "best": (
+                None
+                if best_epoch is None
+                else {
+                    "epoch": best_epoch,
+                    "train_loss": best_train_loss,
+                    "test_loss": best_test_loss,
+                    "test_accuracy_percent": float(best_acc),
+                    "checkpoint_path": str(ckpt_best_path.resolve()),
+                }
+            ),
+            "final": {
+                "test_accuracy_percent": float(final_acc),
+                "test_loss": float(final_eval_loss),
+                "model_size_mib": float(size_mib),
+                "inference_ms_per_image": float(lat_ms),
+            },
+            "checkpoints": {
+                "last": str(ckpt_last_path.resolve()),
+                "best": str(ckpt_best_path.resolve()),
+                "final": str(ckpt_final_path.resolve()),
+            },
+            "artifacts": {
+                "metrics_jsonl": "metrics.jsonl",
+                "training_summary": "training_summary.json",
+            },
+        },
+    )
+    logger.info("Training summary: %s", summary_path.resolve())
 
 
 if __name__ == "__main__":
