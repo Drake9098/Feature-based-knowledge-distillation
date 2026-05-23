@@ -1,0 +1,64 @@
+# Attention Transfer (AT) + KD — Zagoruyko & Komodakis, ICLR 2017
+# Teacher: ResNet-50  |  Student: ResNet-18  |  Dataset: CIFAR-100
+#
+# Loss totale: L_KD + L_AT
+#   L_KD = alpha * CE(hard) + (1 - alpha) * T² * KL(soft_student || soft_teacher)
+#   L_AT = (beta/2) * Σ_j || Q_S^j/‖Q_S^j‖₂ − Q_T^j/‖Q_T^j‖₂ ‖₂²
+#
+# Iperparametri paper (ResNet su CIFAR):
+#   T=4, alpha=0.9 (alta importanza segnale teacher), beta=1000
+
+experiment:
+  name: at_kd
+  seed: 42
+  device: cuda
+
+data:
+  root: ./dataset
+  batch_size: 128
+  num_workers: 4
+  download: false
+  pin_memory: true
+  drop_last: false
+
+training:
+  epochs: 200
+  learning_rate: 0.1
+  momentum: 0.9
+  weight_decay: 5.0e-4
+  log_every_steps: 50
+  scheduler:
+    name: cosine
+    eta_min: 0.0
+
+distillation:
+  temperature: 8.0
+  # alpha: peso CE nella KD loss (1-alpha = peso KL soft)
+  # Paper AT suggerisce alpha alto (0.9) per dare priorità al segnale teacher
+  alpha: 0.9
+
+attention_transfer:
+  # beta: peso iniziale del termine AT nella loss totale (paper: 1000)
+  beta: 1000.0
+  # beta_decay: se true, beta scala proporzionalmente all'LR ad ogni milestone
+  #   beta(t) = beta_0 * lr(t) / lr_0
+  # Quando lo scheduler dimezza l'LR, beta si dimezza di conseguenza.
+  beta_decay: true
+  # layer monitorati: layer1..4 su entrambi i modelli (stessa risoluzione spaziale)
+  layers: [layer1, layer2, layer3, layer4]
+
+model:
+  teacher_name: resnet50
+  student_name: resnet18
+  num_classes: 100
+  pretrained_teacher: false
+  teacher_weights_path: null
+  teacher_checkpoint: ./experiments/checkpoints/teacher_finetune_cifar100/2026-05-10_19-43-05/teacher_finetune_cifar100_teacher_best.pt
+  # student_checkpoint: null
+
+checkpoint:
+  dir: ./experiments/checkpoints
+
+metrics:
+  latency_num_batches: 50
+  latency_warmup_batches: 5

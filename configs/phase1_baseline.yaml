@@ -20,9 +20,8 @@ training:
   momentum: 0.9
   weight_decay: 5.0e-4
   scheduler:
-    name: multistep
-    milestones: [60, 120, 160]
-    gamma: 0.2
+    name: cosine
+    eta_min: 0.0
 
 model:
   teacher_name: resnet50

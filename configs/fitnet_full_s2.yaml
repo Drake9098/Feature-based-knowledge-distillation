@@ -18,12 +18,11 @@ training:
   momentum: 0.9
   weight_decay: 5.0e-4
   scheduler:
-    name: multistep
-    milestones: [60, 120, 160]
-    gamma: 0.2
+    name: cosine
+    eta_min: 0.0
 
 distillation:
-  temperature: 3.0
+  temperature: 8.0
   alpha: 0.1
 
 model:
@@ -32,7 +31,7 @@ model:
   num_classes: 100
   pretrained_teacher: false
   teacher_weights_path: null
-  teacher_checkpoint: ./experiments/checkpoints/teacher_finetune_cifar100/2026-05-08_18-59-26/teacher_finetune_cifar100_teacher_best.pt
+  teacher_checkpoint: ./experiments/checkpoints/teacher_finetune_cifar100/2026-05-10_19-43-05/teacher_finetune_cifar100_teacher_best.pt
   student_checkpoint: ./experiments/checkpoints/fitnet_full_s1/2026-05-09_16-36-57/fitnet_full_s1_s1_best.pt
 
 checkpoint:
