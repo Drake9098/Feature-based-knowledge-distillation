@@ -82,6 +82,8 @@ elif [[ "$CONFIG" == *fitnet*s1* || "$CONFIG" == *fitnet*stage1* ]]; then
     ENTRYPOINT="src/training/train_fitnet_stage1.py"
 elif [[ "$CONFIG" == *fitnet*s2* || "$CONFIG" == *fitnet*stage2* ]]; then
     ENTRYPOINT="src/training/train_fitnet_stage2.py"
+elif [[ "$CONFIG" == *at_kd* || "$CONFIG" == *attention* ]]; then
+    ENTRYPOINT="src/training/train_at.py"
 elif [[ "$CONFIG" == *kd* || "$CONFIG" == *distill* ]]; then
     ENTRYPOINT="src/training/train_kd.py"
 else

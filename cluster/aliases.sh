@@ -112,6 +112,15 @@ train-fitnet-s2() {
     cd "$PROJ_DIR" && python3 -u src/training/train_fitnet_stage2.py --config "$config"
 }
 
+# Lancia Attention Transfer + KD (locale) (uso: train-at [--config PATH])
+train-at() {
+    local config="configs/at_kd.yaml"
+    if [ "${1:-}" = "--config" ] && [ -n "${2:-}" ]; then
+        config="$2"
+    fi
+    cd "$PROJ_DIR" && python3 -u src/training/train_at.py --config "$config"
+}
+
 # Monitor real-time delle metriche (JSONL) di una run.
 # Uso: monitor-run experiments/checkpoints/<exp>/<timestamp>
 #      monitor-run   (senza argomenti) → come monitor-latest
@@ -274,6 +283,14 @@ sbatch-fitnet-s2() {
     cd "$PROJ_DIR" && bash cluster/submit_train.sh --config "$config"
 }
 
+sbatch-at() {
+    local config="configs/at_kd.yaml"
+    if [ "${1:-}" = "--config" ] && [ -n "${2:-}" ]; then
+        config="$2"
+    fi
+    cd "$PROJ_DIR" && bash cluster/submit_train.sh --config "$config"
+}
+
 # ── Coda training (SLURM) ─────────────────────────────────────────────────────
 
 # Aggiungi uno o più config YAML alla coda (uso: queue-add configs/a.yaml [configs/b.yaml ...])
@@ -356,10 +373,18 @@ claudio() {
     echo "  followlog         — tail -f dell'ultimo log"
     echo ""
     echo "── Training ──"
-    echo "  train-teacher [--config PATH]   — fine-tune teacher (locale)"
-    echo "  train-baseline [--config PATH]  — baseline student (locale)"
-    echo "  sbatch-teacher [--config PATH]  — fine-tune teacher via SLURM (cluster/train.sh)"
-    echo "  sbatch-baseline [--config PATH] — baseline student via SLURM (cluster/train.sh)"
+    echo "  train-teacher [--config PATH]      — fine-tune teacher (locale)"
+    echo "  train-baseline [--config PATH]     — baseline student (locale)"
+    echo "  train-kd [--config PATH]           — KD standard Hinton (locale)"
+    echo "  train-fitnet-s1 [--config PATH]    — FitNets Stage 1 (locale)"
+    echo "  train-fitnet-s2 [--config PATH]    — FitNets Stage 2 (locale)"
+    echo "  train-at [--config PATH]           — Attention Transfer + KD (locale)"
+    echo "  sbatch-teacher [--config PATH]     — fine-tune teacher via SLURM"
+    echo "  sbatch-baseline [--config PATH]    — baseline student via SLURM"
+    echo "  sbatch-kd [--config PATH]          — KD standard Hinton via SLURM"
+    echo "  sbatch-fitnet-s1 [--config PATH]   — FitNets Stage 1 via SLURM"
+    echo "  sbatch-fitnet-s2 [--config PATH]   — FitNets Stage 2 via SLURM"
+    echo "  sbatch-at [--config PATH]          — Attention Transfer + KD via SLURM"
     echo "  monitor [RUN_DIR]   — metriche live (Apptainer se disponibile); senza argomenti → ultima run"
     echo ""
     echo "── Queue (SLURM) ──"

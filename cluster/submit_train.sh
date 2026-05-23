@@ -47,6 +47,8 @@ if [ -z "$type" ]; then
         type="fitnet-s1"
     elif [[ "$cfg_lc" == *fitnet*s2* ]] || [[ "$cfg_lc" == *fitnet*stage2* ]]; then
         type="fitnet-s2"
+    elif [[ "$cfg_lc" == *at_kd* ]] || [[ "$cfg_lc" == *attention* ]]; then
+        type="at"
     elif [[ "$cfg_lc" == *kd* ]] || [[ "$cfg_lc" == *distill* ]]; then
         type="kd"
     elif [[ "$cfg_lc" == *student* ]]; then
