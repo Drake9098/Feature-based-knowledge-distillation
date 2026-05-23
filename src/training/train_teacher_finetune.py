@@ -9,7 +9,7 @@ import time
 
 import torch
 import torch.nn as nn
-from torch.optim.lr_scheduler import MultiStepLR
+from torch.optim.lr_scheduler import CosineAnnealingLR, MultiStepLR
 
 from src.data.cifar100 import build_cifar100_loaders
 from src.models.teacher import build_teacher
@@ -108,33 +108,27 @@ def main() -> None:
     optimizer = torch.optim.SGD(param_groups, momentum=momentum)
     criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
 
-    # Scheduler (MultiStepLR) opzionale via YAML:
-    # training:
-    #   scheduler:
-    #     name: multistep
-    #     milestones: [30, 40]
-    #     gamma: 0.1
     scheduler = None
     scheduler_cfg = t_cfg.get("scheduler")
     if isinstance(scheduler_cfg, dict):
-        name = str(scheduler_cfg.get("name", "multistep")).lower().strip()
-        if name in {"multistep", "multi_step", "multisteplr"}:
-            milestones = scheduler_cfg.get("milestones")
-            if milestones is None:
-                # Default: drop a ~60% e ~80% delle epoche
-                # TODO: se vuoi replicare una specifica ricetta paper, imposta milestones esplicite nel YAML.
-                milestones = [max(1, int(0.6 * int(t_cfg["epochs"]))), max(1, int(0.8 * int(t_cfg["epochs"])))]
+        sched_name = str(scheduler_cfg.get("name", "cosine")).lower().strip()
+        if sched_name in {"cosine", "cosineannealinglr"}:
+            t_max = int(scheduler_cfg.get("t_max", int(t_cfg["epochs"])))
+            eta_min = float(scheduler_cfg.get("eta_min", 0.0))
+            scheduler = CosineAnnealingLR(optimizer, T_max=t_max, eta_min=eta_min)
+            print(f"Scheduler: CosineAnnealingLR T_max={t_max} eta_min={eta_min}")
+        elif sched_name in {"multistep", "multi_step", "multisteplr"}:
+            milestones = scheduler_cfg.get("milestones", [60, 80])
             gamma = float(scheduler_cfg.get("gamma", 0.1))
             scheduler = MultiStepLR(optimizer, milestones=[int(m) for m in milestones], gamma=gamma)
+            print(f"Scheduler: MultiStepLR milestones={scheduler.milestones} gamma={scheduler.gamma}")
         else:
-            raise ValueError(f"Scheduler non supportato: {name}. Usa name: multistep oppure rimuovi training.scheduler.")
+            raise ValueError(f"Scheduler non supportato: {sched_name!r}. Usa 'cosine' o 'multistep'.")
 
     print(
         f"Optimizer: conv1+fc lr={lr_new}, backbone lr={lr_backbone} "
         f"(mult={t_cfg['backbone_lr_mult']}), wd={wd}, momentum={momentum}",
     )
-    if scheduler is not None:
-        print(f"Scheduler: MultiStepLR milestones={scheduler.milestones} gamma={scheduler.gamma}")
 
     ckpt_root = Path(cfg["checkpoint"]["dir"])
     # Salviamo checkpoint progressivi e best model in una sottocartella per-run basata su timestamp,

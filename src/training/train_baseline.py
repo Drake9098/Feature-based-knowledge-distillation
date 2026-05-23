@@ -9,7 +9,7 @@ import time
 
 import torch
 import torch.nn as nn
-from torch.optim.lr_scheduler import MultiStepLR
+from torch.optim.lr_scheduler import CosineAnnealingLR, MultiStepLR
 
 from src.data.cifar100 import build_cifar100_loaders
 from src.models import baseline
@@ -80,30 +80,22 @@ def main() -> None:
         weight_decay=float(t_cfg["weight_decay"]),
     )
 
-    # Scheduler (MultiStepLR) opzionale via YAML:
-    # training:
-    #   scheduler:
-    #     name: multistep
-    #     milestones: [60, 120, 160]
-    #     gamma: 0.2
     scheduler = None
     scheduler_cfg = t_cfg.get("scheduler")
     if isinstance(scheduler_cfg, dict):
-        name = str(scheduler_cfg.get("name", "multistep")).lower().strip()
-        if name in {"multistep", "multi_step", "multisteplr"}:
-            milestones = scheduler_cfg.get("milestones")
-            if milestones is None:
-                # Default: schedule tipico CIFAR su 200 epoche
-                # TODO: rendi esplicito nel YAML se cambi epochs.
-                milestones = [60, 120, 160]
+        sched_name = str(scheduler_cfg.get("name", "cosine")).lower().strip()
+        if sched_name in {"cosine", "cosineannealinglr"}:
+            t_max = int(scheduler_cfg.get("t_max", int(t_cfg["epochs"])))
+            eta_min = float(scheduler_cfg.get("eta_min", 0.0))
+            scheduler = CosineAnnealingLR(optimizer, T_max=t_max, eta_min=eta_min)
+            print(f"Scheduler: CosineAnnealingLR T_max={t_max} eta_min={eta_min}")
+        elif sched_name in {"multistep", "multi_step", "multisteplr"}:
+            milestones = scheduler_cfg.get("milestones", [60, 120, 160])
             gamma = float(scheduler_cfg.get("gamma", 0.2))
             scheduler = MultiStepLR(optimizer, milestones=[int(m) for m in milestones], gamma=gamma)
+            print(f"Scheduler: MultiStepLR milestones={scheduler.milestones} gamma={scheduler.gamma}")
         else:
-            raise ValueError(
-                f"Scheduler non supportato: {name}. Usa name: multistep oppure rimuovi training.scheduler."
-            )
-    if scheduler is not None:
-        print(f"Scheduler: MultiStepLR milestones={scheduler.milestones} gamma={scheduler.gamma}")
+            raise ValueError(f"Scheduler non supportato: {sched_name!r}. Usa 'cosine' o 'multistep'.")
 
     ckpt_root = Path(cfg["checkpoint"]["dir"])
     exp_name = str(cfg["experiment"]["name"])

@@ -1,14 +1,19 @@
-"""Fase 2 — Knowledge Distillation standard (Hinton) tra teacher ResNet-50 e student ResNet-18.
+"""Attention Transfer (AT) — Zagoruyko & Komodakis, ICLR 2017.
 
-Il teacher è caricato da un checkpoint fine-tuned su CIFAR-100 e tenuto frozen.
-Lo student viene addestrato con KDLoss = α·CE(hard) + (1-α)·T²·KL(soft).
+Loss totale: L_CE + L_KD + L_AT
+
+    L_KD  = alpha * CE(hard) + (1 - alpha) * T² * KL(soft_student || soft_teacher)
+    L_AT  = (beta/2) * Σ_j || Q_S^j/‖Q_S^j‖₂ − Q_T^j/‖Q_T^j‖₂ ‖₂²
+
+Nessun regressore: le mappe di attenzione sono confrontate direttamente dopo
+normalizzazione L2, senza proiettare canali. Un unico stadio di training.
 """
 
 from __future__ import annotations
 
 import argparse
-from pathlib import Path
 from datetime import datetime
+from pathlib import Path
 import time
 
 import torch
@@ -18,6 +23,8 @@ from torch.optim.lr_scheduler import CosineAnnealingLR, MultiStepLR
 from src.data.cifar100 import build_cifar100_loaders
 from src.models.baseline import build_baseline
 from src.models.teacher import build_teacher
+from src.models.distillation_utils import FeatureExtractor
+from src.training.attention_utils import at_loss
 from src.training.loss import KDLoss
 from src.training.metrics import accuracy_percent, inference_latency_ms, model_size_mb
 from src.utils.checkpoint import load_checkpoint, save_checkpoint
@@ -43,11 +50,11 @@ def _resolve_device(name: str) -> torch.device:
 
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Fase 2 — Knowledge Distillation standard (Hinton)")
+    p = argparse.ArgumentParser(description="Attention Transfer (AT) — Zagoruyko & Komodakis 2017")
     p.add_argument(
         "--config",
         type=Path,
-        default=Path("configs/phase2_kd.yaml"),
+        default=Path("configs/at_kd.yaml"),
         help="Percorso al file YAML di configurazione.",
     )
     return p.parse_args()
@@ -74,8 +81,6 @@ def main() -> None:
     )
 
     # --- Teacher (frozen) ---
-    # build_teacher con pretrained_teacher: false costruisce ResNet-50 CIFAR con pesi random;
-    # poi carichiamo il checkpoint fine-tuned su CIFAR-100 con strict=True per avere tutti i layer.
     teacher = build_teacher(cfg["model"])
     t_ckpt_path_raw = cfg["model"].get("teacher_checkpoint")
     if not t_ckpt_path_raw:
@@ -87,16 +92,15 @@ def main() -> None:
     if not t_ckpt_path.is_file():
         raise FileNotFoundError(
             f"Teacher checkpoint non trovato: {t_ckpt_path}\n"
-            "Esegui prima train_teacher_finetune.py e aggiorna model.teacher_checkpoint nel YAML."
+            "Aggiorna model.teacher_checkpoint nel YAML."
         )
     ckpt = load_checkpoint(t_ckpt_path, map_location="cpu")
     teacher.load_state_dict(ckpt["model_state_dict"], strict=True)
     print(f"Teacher: caricato da {t_ckpt_path}")
-
     teacher = teacher.to(device)
     teacher.eval()
-    for param in teacher.parameters():
-        param.requires_grad_(False)
+    for p in teacher.parameters():
+        p.requires_grad_(False)
 
     # --- Student ---
     student = build_baseline(cfg["model"])
@@ -104,21 +108,31 @@ def main() -> None:
     if s_ckpt_path_raw:
         s_ckpt_path = Path(s_ckpt_path_raw)
         if not s_ckpt_path.is_file():
-            raise FileNotFoundError(
-                f"Student checkpoint non trovato: {s_ckpt_path}\n"
-                "Esegui prima train_fitnet_stage1.py e aggiorna model.student_checkpoint nel YAML."
-            )
+            raise FileNotFoundError(f"Student checkpoint non trovato: {s_ckpt_path}")
         s_ckpt = load_checkpoint(s_ckpt_path, map_location="cpu")
         student.load_state_dict(s_ckpt["model_state_dict"], strict=True)
         print(f"Student: warm-start da {s_ckpt_path}")
     student = student.to(device)
 
-    # --- Distillation hyperparams ---
+    # --- AT config ---
+    at_cfg = cfg["attention_transfer"]
+    beta_0: float = float(at_cfg["beta"])
+    beta_decay: bool = bool(at_cfg.get("beta_decay", False))
+    at_layers: list[str] = list(at_cfg["layers"])
+    beta: float = beta_0  # valore corrente, aggiornato ad ogni milestone se beta_decay=True
+    initial_lr: float = float(cfg["training"]["learning_rate"])
+    print(f"AT: beta_0={beta_0}, beta_decay={beta_decay}, layers={at_layers}")
+
+    # --- Feature extractors (hooks su layer1..4 per entrambi i modelli) ---
+    t_extractor = FeatureExtractor(teacher, at_layers)
+    s_extractor = FeatureExtractor(student, at_layers)
+
+    # --- KD loss ---
     kd_cfg = cfg["distillation"]
     temperature = float(kd_cfg["temperature"])
     alpha = float(kd_cfg["alpha"])
     kd_criterion = KDLoss(temperature=temperature, alpha=alpha)
-    print(f"KD: temperature={temperature}, alpha={alpha} (CE={alpha:.2f}, KL={1 - alpha:.2f})")
+    print(f"KD: temperature={temperature}, alpha={alpha}")
 
     # --- Optimizer & scheduler ---
     t_cfg = cfg["training"]
@@ -161,21 +175,21 @@ def main() -> None:
             i += 1
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    logger = setup_run_logger(run_dir=run_dir, training_type="kd", name="train.kd")
+    logger = setup_run_logger(run_dir=run_dir, training_type="at", name="train.at")
     metrics = MetricsWriter(
         path=run_dir / "metrics.jsonl",
         experiment_name=exp_name,
-        training_type="kd",
+        training_type="at",
         run_dir=run_dir,
         config_path=str(args.config),
     )
     logger.info("Run dir: %s", run_dir.resolve())
-    logger.info("Metrics:  %s", (run_dir / "metrics.jsonl").resolve())
     logger.info("Teacher ckpt: %s", t_ckpt_path.resolve())
-    logger.info("KD: temperature=%.1f  alpha=%.3f  (CE=%.2f  KL=%.2f)", temperature, alpha, alpha, 1 - alpha)
+    logger.info("AT layers: %s  beta=%.1f", at_layers, beta)
+    logger.info("KD: temperature=%.1f  alpha=%.3f", temperature, alpha)
 
     # --- Checkpoint paths ---
-    ckpt_stem = f"{exp_name}_kd"
+    ckpt_stem = f"{exp_name}_at"
     ckpt_last_path = run_dir / f"{ckpt_stem}_last.pt"
     ckpt_best_path = run_dir / f"{ckpt_stem}_best.pt"
     ckpt_final_path = run_dir / f"{ckpt_stem}_final.pt"
@@ -203,14 +217,16 @@ def main() -> None:
         "msg": "run_start",
         "temperature": temperature,
         "alpha": alpha,
+        "beta": beta,
+        "at_layers": at_layers,
     })
 
     # --- Training loop ---
     for epoch in range(epochs):
-        student.train()
+        s_extractor.train()
         running_loss = 0.0
-        running_hard = 0.0
         running_kd = 0.0
+        running_at = 0.0
         n_train = 0
         epoch_start = time.perf_counter()
         last_step_t = time.perf_counter()
@@ -220,27 +236,29 @@ def main() -> None:
             inputs = inputs.to(device, non_blocking=True)
             labels = labels.to(device, non_blocking=True)
 
+            # Teacher: forward senza gradienti — cattura logits + mappe di attenzione
             with torch.no_grad():
-                teacher_logits = teacher(inputs)
+                teacher_logits, teacher_feats = t_extractor(inputs)
 
+            # Student: forward con gradienti — cattura logits + mappe di attenzione
             optimizer.zero_grad(set_to_none=True)
-            student_logits = student(inputs)
-            loss = kd_criterion(student_logits, teacher_logits, labels)
+            student_logits, student_feats = s_extractor(inputs)
 
-            # Calcolo componenti per il logging (senza costruire nuovo grafo)
-            with torch.no_grad():
-                hard_l = F.cross_entropy(student_logits, labels).item()
-                soft_s = F.log_softmax(student_logits / temperature, dim=1)
-                soft_t = F.softmax(teacher_logits / temperature, dim=1)
-                kd_l = float(temperature ** 2) * F.kl_div(soft_s, soft_t, reduction="batchmean").item()
+            # KD loss: alpha*CE(hard) + (1-alpha)*T²*KL(soft)
+            kd_l = kd_criterion(student_logits, teacher_logits, labels)
+
+            # AT loss: (beta/2) * Σ_j ||Q_S^j/‖Q_S^j‖₂ − Q_T^j/‖Q_T^j‖₂||₂²
+            at_l = at_loss(student_feats, teacher_feats, at_layers, beta)
+
+            loss = kd_l + at_l
 
             loss.backward()
             optimizer.step()
 
             bs = labels.size(0)
             running_loss += loss.item() * bs
-            running_hard += hard_l * bs
-            running_kd += kd_l * bs
+            running_kd += kd_l.item() * bs
+            running_at += at_l.item() * bs
             n_train += bs
             global_step += 1
 
@@ -254,42 +272,48 @@ def main() -> None:
                     "step": (global_step % steps_per_epoch) or steps_per_epoch,
                     "steps_per_epoch": steps_per_epoch,
                     "loss": float(running_loss / max(n_train, 1)),
-                    "hard_loss": float(running_hard / max(n_train, 1)),
                     "kd_loss": float(running_kd / max(n_train, 1)),
+                    "at_loss": float(running_at / max(n_train, 1)),
+                    "beta": float(beta),
                     "lr": float(optimizer.param_groups[0]["lr"]),
                     "step_time_s": float(step_time_s),
                 })
 
         train_loss = running_loss / max(n_train, 1)
-        train_hard = running_hard / max(n_train, 1)
         train_kd = running_kd / max(n_train, 1)
+        train_at = running_at / max(n_train, 1)
 
-        # --- Eval: solo student con CE standard ---
-        student.eval()
+        # --- Eval: CE sul test set + accuracy student ---
+        s_extractor.eval()
         eval_loss_sum = 0.0
         n_eval = 0
         with torch.inference_mode():
             for inputs, labels in eval_loader:
                 inputs = inputs.to(device, non_blocking=True)
                 labels = labels.to(device, non_blocking=True)
-                logits = student(inputs)
+                logits = s_extractor.model(inputs)
                 eval_loss_sum += F.cross_entropy(logits, labels).item() * labels.size(0)
                 n_eval += labels.size(0)
         eval_loss = eval_loss_sum / max(n_eval, 1)
 
-        acc = accuracy_percent(student, eval_loader, device)
+        acc = accuracy_percent(s_extractor.model, eval_loader, device)
 
         if scheduler is not None:
             scheduler.step()
         lr = optimizer.param_groups[0]["lr"]
+
+        # Beta decay proporzionale all'LR: beta(t) = beta_0 * lr(t) / lr_0
+        if beta_decay:
+            beta = beta_0 * (lr / initial_lr)
+
         epoch_time_s = time.perf_counter() - epoch_start
 
         logger.info(
-            "Epoch %d/%d | train_loss: %.4f (hard=%.4f kd=%.4f) | "
-            "test_loss: %.4f | test_acc: %.2f%% | lr: %.6g",
+            "Epoch %d/%d | train_loss: %.4f (kd=%.4f at=%.4f) | "
+            "test_loss: %.4f | test_acc: %.2f%% | lr: %.6g | beta: %.4g",
             epoch + 1, epochs,
-            train_loss, train_hard, train_kd,
-            eval_loss, acc, lr,
+            train_loss, train_kd, train_at,
+            eval_loss, acc, lr, beta,
         )
         metrics.write({
             "kind": "eval",
@@ -299,21 +323,23 @@ def main() -> None:
             "steps_per_epoch": steps_per_epoch,
             "loss": float(eval_loss),
             "acc": float(acc),
+            "beta": float(beta),
             "lr": float(lr),
             "epoch_time_s": float(epoch_time_s),
         })
         per_epoch.append({
             "epoch": epoch + 1,
             "train_loss": float(train_loss),
-            "train_hard_loss": float(train_hard),
             "train_kd_loss": float(train_kd),
+            "train_at_loss": float(train_at),
             "test_loss": float(eval_loss),
             "test_accuracy_percent": float(acc),
+            "beta": float(beta),
             "lr": float(lr),
             "epoch_time_s": float(epoch_time_s),
         })
 
-        # Checkpoint "last" a ogni epoca
+        # Checkpoint "last" ad ogni epoca
         save_checkpoint(ckpt_last_path, {
             "model_state_dict": student.state_dict(),
             "optimizer_state_dict": optimizer.state_dict(),
@@ -326,7 +352,7 @@ def main() -> None:
             "best_acc_so_far": best_acc,
         })
 
-        # Checkpoint "best" quando migliora
+        # Checkpoint "best" quando migliora la accuracy sul test set
         if acc > best_acc:
             best_acc = acc
             best_epoch = epoch + 1
@@ -368,14 +394,13 @@ def main() -> None:
     lat_ms = inference_latency_ms(student, eval_loader, device, cfg["metrics"])
     logger.info(
         "Final(best) | test_loss: %.4f | test_acc: %.2f%% | "
-        "model_size: %.2f MiB | inference: %.4f ms/image (incl. host→device transfer)",
+        "model_size: %.2f MiB | inference: %.4f ms/image",
         final_eval_loss, final_acc, size_mib, lat_ms,
     )
 
     save_checkpoint(ckpt_final_path, {
         "model_state_dict": student.state_dict(),
         "optimizer_state_dict": optimizer.state_dict(),
-        "scheduler_state_dict": None if scheduler is None else scheduler.state_dict(),
         "epoch": epochs,
         "test_acc": final_acc,
         "test_loss": final_eval_loss,
@@ -384,10 +409,12 @@ def main() -> None:
         "best_checkpoint_path": str(ckpt_best_path),
         "temperature": temperature,
         "alpha": alpha,
+        "beta": beta,
+        "at_layers": at_layers,
     })
-    logger.info("Checkpoint KD (final): %s", ckpt_final_path.resolve())
-    logger.info("Checkpoint KD (last):  %s", ckpt_last_path.resolve())
-    logger.info("Checkpoint KD (best):  %s", ckpt_best_path.resolve())
+    logger.info("Checkpoint AT (final): %s", ckpt_final_path.resolve())
+    logger.info("Checkpoint AT (last):  %s", ckpt_last_path.resolve())
+    logger.info("Checkpoint AT (best):  %s", ckpt_best_path.resolve())
 
     metrics.write({
         "kind": "meta",
@@ -405,7 +432,7 @@ def main() -> None:
         run_dir,
         {
             "experiment": exp_name,
-            "training_type": "kd",
+            "training_type": "at",
             "config_path": str(args.config.resolve()),
             "run_dir": str(run_dir.resolve()),
             "device": str(device),
@@ -415,6 +442,12 @@ def main() -> None:
             "wall_time_seconds": float(wall_s),
             "epochs": epochs,
             "steps_per_epoch": steps_per_epoch,
+            "attention_transfer": {
+                "beta_0": beta_0,
+                "beta_final": beta,
+                "beta_decay": beta_decay,
+                "at_layers": at_layers,
+            },
             "distillation": {
                 "temperature": temperature,
                 "alpha": alpha,
