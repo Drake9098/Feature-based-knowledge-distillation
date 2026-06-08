@@ -68,6 +68,21 @@ function Download-RemoteDir($remoteSubpath, $localDest) {
     ssh @idArgs $SSH_TARGET "cd ~/${REMOTE_DIR} && tar cf - $excludeArgs $remoteSubpath" | tar xvf - -C "$LOCAL"
 }
 
+# Metriche di training in experiments/checkpoints (no checkpoint .pt/.pth).
+$CHECKPOINT_METRIC_FILES = @("metrics.jsonl", "training_summary.json")
+
+function Download-RemoteCheckpointMetrics($remoteSubpath, $localDest) {
+    $idArgs = Get-SshIdentityArgs
+    New-Item -ItemType Directory -Force -Path $localDest | Out-Null
+
+    $nameTests = ($CHECKPOINT_METRIC_FILES | ForEach-Object { "-name '$_'" }) -join " -o "
+    $remoteCmd = @"
+cd ~/${REMOTE_DIR} && find $remoteSubpath -type f \( $nameTests \) 2>/dev/null | tar cf - -T -
+"@
+
+    ssh @idArgs $SSH_TARGET $remoteCmd | tar xf - -C "$LOCAL" 2>$null
+}
+
 function Upload {
     Write-Host "Uploading project to cluster..." -ForegroundColor Cyan
     $idArgs = Get-SshIdentityArgs
@@ -177,7 +192,7 @@ function DownloadAll {
     Write-Progress -Activity "Download" -Status "[1/2] logs..." -PercentComplete 0
     DownloadLogs
 
-    Write-Progress -Activity "Download" -Status "[2/2] checkpoints..." -PercentComplete 50
+    Write-Progress -Activity "Download" -Status "[2/2] checkpoint metrics..." -PercentComplete 50
     DownloadCheckpoints
 
     Write-Progress -Activity "Download" -Completed
@@ -193,11 +208,11 @@ function DownloadLogs {
 }
 
 function DownloadCheckpoints {
-    Write-Progress -Activity "Download" -Status "Downloading checkpoints/..." -PercentComplete 0
+    Write-Progress -Activity "Download" -Status "Downloading checkpoint metrics (no .pt)..." -PercentComplete 0
     $dest = Join-Path $LOCAL "experiments\\checkpoints"
-    Download-RemoteDir "experiments/checkpoints" $dest
+    Download-RemoteCheckpointMetrics "experiments/checkpoints" $dest
     Write-Progress -Activity "Download" -Completed
-    Write-Host "  -> saved to experiments\\checkpoints\\" -ForegroundColor Gray
+    Write-Host "  -> saved metrics to experiments\\checkpoints\\ (metrics.jsonl, training_summary.json)" -ForegroundColor Gray
 }
 
 function DownloadWandb {
