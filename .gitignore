@@ -16,9 +16,13 @@ data/
 dataset/
 weights/
 logs/
+images/
 
 # Editor / OS
 .idea/
 .vscode/
 .DS_Store
 Thumbs.db
+
+*.lock
+REPORT_SOURCE_RUNS.json
