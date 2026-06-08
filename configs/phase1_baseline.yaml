@@ -1,18 +1,15 @@
-# Fase 1 — baseline student (solo cross-entropy, senza distillazione)
 experiment:
   name: phase1_baseline
   seed: 42
-  device: cuda # usa "cpu" se necessario
+  device: cuda
 
 data:
-  # Allineato a scripts/download_offline_assets.py → copia la cartella `dataset/` sul cluster
   root: ./dataset
   batch_size: 128
   num_workers: 4
   download: false
   pin_memory: true
   drop_last: false
-  # TODO: split train/val opzionale (random_split) in build_cifar100_loaders se serve early stopping
 
 training:
   epochs: 200
@@ -32,7 +29,6 @@ model:
 
 checkpoint:
   dir: ./experiments/checkpoints
-  # TODO: naming run (timestamp, hyperparam) se vuoi più esperimenti paralleli
 
 metrics:
   latency_num_batches: 50

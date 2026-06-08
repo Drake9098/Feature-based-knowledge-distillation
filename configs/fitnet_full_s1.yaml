@@ -1,7 +1,3 @@
-# FitNets Stage 1 — Config C (Full / Multi-Layer): hint su tutti e 4 i layer
-# Guida costante lungo tutto il backbone: layer1 → layer2 → layer3 → layer4.
-# Loss: somma MSE su tutte le coppie di layer.
-# Tutti i parametri del backbone sono addestrabili (solo fc congelato).
 experiment:
   name: fitnet_full_s1
   seed: 42
@@ -23,23 +19,22 @@ training:
 
 fitnet:
   hint_layers:
-    - teacher_layer: layer1   # ResNet-50: 256 ch @ 32×32
-      student_layer: layer1   # ResNet-18:  64 ch @ 32×32
+    - teacher_layer: layer1
+      student_layer: layer1
       teacher_channels: 256
       student_channels: 64
-    - teacher_layer: layer2   # ResNet-50: 512 ch @ 16×16
-      student_layer: layer2   # ResNet-18: 128 ch @ 16×16
+    - teacher_layer: layer2
+      student_layer: layer2
       teacher_channels: 512
       student_channels: 128
-    - teacher_layer: layer3   # ResNet-50: 1024 ch @ 8×8
-      student_layer: layer3   # ResNet-18:  256 ch @ 8×8
+    - teacher_layer: layer3
+      student_layer: layer3
       teacher_channels: 1024
       student_channels: 256
-    - teacher_layer: layer4   # ResNet-50: 2048 ch @ 4×4
-      student_layer: layer4   # ResNet-18:  512 ch @ 4×4
+    - teacher_layer: layer4
+      student_layer: layer4
       teacher_channels: 2048
       student_channels: 512
-  # Ultimo layer guidato è layer4 → solo fc congelato automaticamente
 
 model:
   teacher_name: resnet50

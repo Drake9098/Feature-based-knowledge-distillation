@@ -1,4 +1,3 @@
-# Fine-tuning ResNet-50 (teacher) su CIFAR-100 con LR diversi: conv1+fc vs backbone ImageNet
 experiment:
   name: teacher_finetune_cifar100
   seed: 42
@@ -14,9 +13,7 @@ data:
 
 training:
   epochs: 100
-  # LR più alto per layer reinizializzati (conv1 3x3, fc 100 classi)
   learning_rate_new: 0.01
-  # Backbone: lr = learning_rate_new * backbone_lr_mult (es. 0.01 → 100× più piccolo)
   backbone_lr_mult: 0.1
   momentum: 0.9
   weight_decay: 1.0e-3
@@ -33,7 +30,6 @@ model:
 
 checkpoint:
   dir: ./experiments/checkpoints
-  # Output: checkpoints/teacher_finetune_cifar100_teacher.pt → usa come teacher_weights_path dopo il fine-tuning
 
 metrics:
   latency_num_batches: 50

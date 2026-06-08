@@ -1,7 +1,3 @@
-# FitNets Stage 1 — Config B (Deep): hint su layer4
-# Trasmissione di astrazioni semantiche finali (layer più profondo prima del classifier).
-# Loss: MSE(regressor(student.layer4), teacher.layer4)
-# Solo student[conv1..layer4] + regressore vengono aggiornati; fc congelato.
 experiment:
   name: fitnet_deep_s1
   seed: 42
@@ -23,11 +19,10 @@ training:
 
 fitnet:
   hint_layers:
-    - teacher_layer: layer4   # ResNet-50: output 2048 canali @ 4×4
-      student_layer: layer4   # ResNet-18: output 512 canali @ 4×4
+    - teacher_layer: layer4
+      student_layer: layer4
       teacher_channels: 2048
       student_channels: 512
-  # fc congelato automaticamente
 
 model:
   teacher_name: resnet50
